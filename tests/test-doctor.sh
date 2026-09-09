@@ -2,11 +2,13 @@
 # =============================================================================
 # Regression tests for chains doctor (scripts/chains-doctor.sh).
 #
-# Builds four fixture vaults in a temp dir -- healthy, dangling parent ref,
-# missing pins, stale sync -- plus a broken-journal case, runs the doctor
-# against each, and asserts the exit code (0 healthy / 1 warnings / 2 errors)
-# plus key output markers. Also asserts the doctor is read-only: a hash of
-# every file in the fixture vault must be identical before and after the run.
+# Builds five fixture vaults in a temp dir -- healthy, dangling parent ref,
+# missing pins, stale sync, broken journal -- plus a --json pass over the
+# healthy/dangling/stale fixtures, runs the doctor against each, and asserts
+# the exit code (0 healthy / 1 warnings / 2 errors), the machine-readable
+# report schema, plus key output markers. Also asserts the doctor is
+# read-only: a hash of every file in the fixture vault must be identical
+# before and after the run.
 #
 # Needs: bash, python3 (stdlib only), sha256sum. No network, no installs.
 # Run from the repo root:  bash tests/test-doctor.sh
@@ -192,6 +194,72 @@ if [ "$BEFORE_FIX" = "$AFTER_FIX" ]; then pass "--fix performs no writes"; else 
 # doctor must refuse a non-vault
 OUT_BAD="$("$DOCTOR" "$FIX" 2>&1)"; CODE_BAD=$?
 assert_exit 2 "$CODE_BAD" "non-vault rejected"
+
+# --- --json: machine-readable report ------------------------------------------
+run_doctor_json() {  # run_doctor_json <vault> : sets JOUT and JCODE; asserts read-only
+    local v="$1"
+    local before after
+    before="$(snapshot_fixture "$v")"
+    JOUT="$("$DOCTOR" --json "$v" 2>&1)"
+    JCODE=$?
+    after="$(snapshot_fixture "$v")"
+    if [ "$before" = "$after" ]; then
+        pass "--json is read-only on $(basename "$v")"
+    else
+        fail "--json modified files in $(basename "$v")"
+    fi
+}
+
+json_field() {  # json_field <json> <expr> : prints the evaluated field
+    python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print('"$2"')' "$1" 2>/dev/null
+}
+
+run_doctor_json "$V1"
+assert_exit 0 "$JCODE" "--json on healthy vault"
+# stdout must be exactly one JSON document (scriptable): no banner, no chatter.
+if printf '%s' "$JOUT" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+    pass "--json emits a single valid JSON document"
+else
+    fail "--json emits a single valid JSON document"
+fi
+[ "$(json_field "$JOUT" 'd["result"]')" = "healthy" ] && pass "--json result=healthy" || fail "--json result=healthy"
+[ "$(json_field "$JOUT" 'd["exit"]')" = "0" ] && pass "--json exit mirrors exit code" || fail "--json exit mirrors exit code"
+[ "$(json_field "$JOUT" 'd["summary"]["commit_count"]')" = "2" ] && pass "--json summary commit_count" || fail "--json summary commit_count"
+[ "$(json_field "$JOUT" 'd["summary"]["blob_count"]')" = "2" ] && pass "--json summary blob_count" || fail "--json summary blob_count"
+[ "$(json_field "$JOUT" 'd["summary"]["pin_count"]')" = "1" ] && pass "--json summary pin_count" || fail "--json summary pin_count"
+[ "$(json_field "$JOUT" 'd["summary"]["head"]')" = "b2c3d4e5f6a7" ] && pass "--json summary head id" || fail "--json summary head id"
+# every finding has severity + message, severity drawn from the known set
+if python3 - "$JOUT" <<'PY' 2>/dev/null; then
+import json,sys
+d=json.loads(sys.argv[1])
+assert isinstance(d["findings"], list) and d["findings"], "no findings"
+for f in d["findings"]:
+    assert set(f) >= {"severity","message"}, "finding missing keys"
+    assert f["severity"] in {"ok","warn","fail","info"}, "bad severity"
+PY
+    pass "--json findings schema"
+else
+    fail "--json findings schema"
+fi
+# human-only text must not leak into --json output
+if printf '%s' "$JOUT" | grep -qE '^\s*(\[OK\]|\[FAIL\]|\[~\]|\[i\]|chains doctor --)'; then
+    fail "--json has no human-format lines"
+else
+    pass "--json has no human-format lines"
+fi
+
+run_doctor_json "$V2"
+assert_exit 2 "$JCODE" "--json on error vault"
+[ "$(json_field "$JOUT" 'd["result"]')" = "errors" ] && pass "--json result=errors" || fail "--json result=errors"
+if printf '%s' "$JOUT" | grep -q '"severity": "fail"'; then
+    pass "--json carries fail findings"
+else
+    fail "--json carries fail findings"
+fi
+
+run_doctor_json "$V4"
+assert_exit 1 "$JCODE" "--json on warning vault"
+[ "$(json_field "$JOUT" 'd["result"]')" = "warnings" ] && pass "--json result=warnings" || fail "--json result=warnings"
 
 echo ""
 echo "  $PASS passed, $FAIL failed."
