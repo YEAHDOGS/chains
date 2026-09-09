@@ -56,11 +56,12 @@ A vault is any directory containing `.chains/`:
 
 ## Cloud Sync
 
-Chains is designed to ride the Castle storage story (the YEAHDOGS home-server project):
+The sync story is specified in [SYNC.md](SYNC.md). Short version:
 
 1. **LAN vault (now):** the vault directory can live on a Castle network share, so every machine on the LAN sees the same history.
-2. **Remote sync (next):** journal + content-addressed blobs map 1:1 onto a sync server: `PUT /sync/upload/chains/<vault-id>/<sha256>`, journal as the manifest. Blobs dedupe globally by hash.
-3. **Offsite tier (future):** encrypted offsite replication of the vault directory — your saves survive a house fire.
+2. **Local remote sync (now):** `.\chains.ps1 push -Remote <dir>` / `.\chains.ps1 fetch -Remote <dir>` move journal + blobs through any directory (USB stick, LAN share, mounted cloud drive). Offline-first, no network code in the engine — default-deny.
+3. **Network sync (next):** journal + content-addressed blobs map 1:1 onto a sync server: `PUT /sync/upload/chains/<vault-id>/<sha256>`, journal as the manifest. Blobs dedupe globally by hash.
+4. **Offsite tier (future):** encrypted offsite replication of the vault directory — your saves survive a house fire.
 
 Conflict policy: commits are content-addressed and the journal is append-only, so merges are last-writer-wins on the journal with both histories preserved — same shape as git, minus the DAG.
 
@@ -72,7 +73,7 @@ Conflict policy: commits are content-addressed and the journal is append-only, s
 
 ## Roadmap
 
-- `push`/`pull` against a sync server.
+- `push`/`pull` against a network sync server (local-filesystem remote ships now — see SYNC.md).
 - Scheduled auto-commit (e.g. commit on emulator exit / every 30 min).
 - GUI client.
 - More systems: GBC/GB, NDS, PSX memory cards (`.mcr`).
