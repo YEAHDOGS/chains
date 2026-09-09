@@ -13,6 +13,7 @@ records the real-world formats the fixtures and tests are modeled on.
 | `.sav` | GBA | 32 KB (256Kbit flash/SRAM) / 64 KB (512Kbit flash) | mGBA, VBA-M, RetroArch (mGBA/VBA cores) | Raw flash/SRAM dump, no header |
 | `.sav` | GB/GBC | 8 KB / 32 KB | mGBA, VBA-M, RetroArch | Same raw-dump convention |
 | `.mcr` | PSX | 128 KB | DuckStation, ePSXe, RetroArch (Beetle PSX core) | Raw memory-card dump, no header |
+| `.dsv` | NDS | 512 KB typical (flash size varies per game) | DeSmuME | Raw save + small DeSmuME footer; Chains stores the bytes opaquely |
 
 Battery saves are the future-proof format: any emulator for the system can
 read them. Chains' guidance is **save in-game, not just save-state**.
@@ -37,7 +38,11 @@ bytes are only guaranteed meaningful to the emulator build that wrote them.
 - **mGBA** may write a `.sav` alongside RTC/timing sidecar data for some
   games; the `.sav` itself stays a raw dump. Sidecars with other extensions
   are ignored unless they match a tracked pattern (`*.sav` / `*.srm` /
-  `*.state*` / `*.mcr`).
+  `*.state*` / `*.mcr` / `*.dsv`).
+- **DeSmuME** writes `.dsv` battery saves (raw flash data plus a small
+  DeSmuME footer) — by default in its Battery folder next to the ROM path.
+  Chains never parses the footer; the snapshot is the full file bytes, so
+  round-trips stay byte-identical and `verify` re-hashes the whole thing.
 - **DuckStation** memory cards default to `*.mcr` (128 KB raw dumps, one
   per card slot); per-game cards use the same format, so they track
   automatically.
