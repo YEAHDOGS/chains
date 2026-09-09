@@ -3,7 +3,9 @@
 `scripts/chains-doctor.sh` is a dependency-free health check for a Chains
 vault. It exists for the moments PowerShell isn't around — a Linux rescue
 boot, a headless Castle box, a quick sanity check before a risky restore.
-It reads, it never writes.
+By default it reads and never writes. `--fix` performs a small, bounded
+set of safe, reversible repairs (see below); everything else stays
+report-only.
 
 ## Usage
 
@@ -13,9 +15,8 @@ bash scripts/chains-doctor.sh [vault-root] [--fix] [--json]
 
 `vault-root` is the directory containing `.chains/` (default: current
 directory). Exit codes: **0** healthy, **1** warnings only, **2** errors.
-`--fix` is accepted for forward compatibility but is report-only in this
-pass — the doctor has no write code paths at all, so it cannot modify your
-saves even by accident. `--json` prints one machine-readable JSON document
+With `--fix`, the exit code still reflects the **pre-repair** scan — re-run
+the doctor to confirm the vault is clean afterwards.
 on stdout and nothing else, with the same exit codes and the same findings
 as the human report — pipe it into scripts, cron jobs, or CI:
 
@@ -47,6 +48,31 @@ writes inside (or outside) the vault.
 
 Needs only `bash`, `python3` (stdlib), `df`, and `sha256sum`.
 
+## `--fix`: safe, reversible auto-repairs
+
+Without `--fix`, the doctor never writes — the read-only contract holds
+and the test suite asserts it on every fixture. With `--fix`, exactly two
+repairs run, and **only** these:
+
+1. **Malformed remote pin entries** are deleted from `config.json`.
+   A bad pin can't be trusted anyway; the next `push`/`fetch` TOFU-pins
+   the remote again. The good pins are untouched.
+2. **Orphan snapshots** are *moved* (never deleted) out of `snapshots/`.
+
+Everything else stays report-only: the doctor cannot fabricate missing
+blobs, un-edit a tampered journal, or invent commit data — those need the
+manual steps below.
+
+**Snapshot-before-repair:** before any write, `--fix` copies
+`config.json` and `journal.jsonl` into
+`.chains/repair-backups/<utc-timestamp>/` and writes a `repairs.json`
+manifest there. Orphan blobs land in `orphans/` inside the backup.
+Reversing a repair is a manual copy-back (see the `reverses` field in
+the manifest). If the journal is unparseable or `config.json` is not a
+JSON object, no repair is attempted at all. Repairs are reported as
+ordinary `ok` findings, so `--json --fix` carries them as machine-readable
+records too.
+
 ## What it checks
 
 | Check | WARN | FAIL |
@@ -67,7 +93,7 @@ Needs only `bash`, `python3` (stdlib), `df`, and `sha256sum`.
 A vault that has never synced reports an informational note — first sync
 will TOFU-pin the remote, per `SYNC.md`.
 
-## Repair guide (manual -- the doctor won't do these for you)
+## Repair guide (manual steps -- plus what `--fix` automates)
 
 - **Dangling parent ref / broken journal line.** The journal is append-only
   and tamper-evident; a dangling parent means it was hand-edited or
@@ -87,16 +113,20 @@ will TOFU-pin the remote, per `SYNC.md`.
   history is still intact.
 - **Blob hash mismatch.** Corruption on disk. Same remedy as a missing
   blob: fetch a good copy from a pinned remote.
-- **Malformed pin.** Delete the offending pin entry (or the whole
-  `remotePins` object) from `.chains/config.json` and push again -- first
-  contact is trusted and a fresh pin is recorded. See `SYNC.md`
-  ("Re-trusting a remote"); treat it like deleting an SSH known-hosts line.
+- **Malformed pin.** Auto-repaired by `--fix`: the offending pin entry is
+  deleted from `config.json` (the pre-repair backup keeps the original),
+  and the next push re-pins TOFU-style. Manual equivalent: delete the pin
+  entry (or the whole `remotePins` object) and push again -- first contact
+  is trusted and a fresh pin is recorded. See `SYNC.md` ("Re-trusting a
+  remote"); treat it like deleting an SSH known-hosts line.
 - **No pins after syncing.** The engine writes pins on the push/fetch
   success path; if they're absent, the sync may never have completed.
   Push/fetch again and re-run the doctor.
 - **Stale sync.** Not an error by itself -- just run `push`/`fetch`.
-- **Orphan snapshots.** Unreferenced blobs. Harmless; delete them by hand
-  only if you need the space (they can never be resurrected into history).
+- **Orphan snapshots.** Auto-repaired by `--fix`: unreferenced blobs are
+  *moved* (never deleted) into the repair backup's `orphans/` directory,
+  so they're recoverable if you ever need them. Unrepaired they're
+  harmless; they can never be resurrected into history.
 - **Uncommitted changes (working-tree drift).** The emulator wrote to a
   save after your last commit. `commit` the current state to capture the
   progress -- or `restore` the commit to throw the new bytes away (the
@@ -111,12 +141,21 @@ will TOFU-pin the remote, per `SYNC.md`.
 
 ## Regression tests
 
-`tests/test-doctor.sh` builds eight fixture vaults (healthy, dangling
+`tests/test-doctor.sh` builds ten fixture vaults (healthy, dangling
 parent, missing pins, stale sync, broken journal line, working-tree
-drift, untracked saves, journal tampering) in a temp dir, runs the doctor
-against each, and asserts exit codes, report markers, and the read-only
-contract (a hash of every fixture file must be identical before and after
-the run, including under `--fix`). Fixture commit ids are minted with the
+drift, untracked saves, journal tampering, malformed pins, orphan
+snapshot) in a temp dir, runs the doctor against each, and asserts exit
+codes, report markers, and the read-only contract: a hash of every
+fixture file must be identical before and after any run *without*
+`--fix`. The `--fix` write path is covered separately: on the healthy
+vault it creates no backup and writes nothing; on the tampered vault it
+refuses to repair (exit 2, nothing written); on the malformed-pins vault
+it deletes exactly the bad pin entries, keeps the good pin, snapshots
+the pre-repair `config.json`/`journal.jsonl` into
+`.chains/repair-backups/<utc-timestamp>/` with a `repairs.json` manifest,
+and a re-run comes back healthy; on the orphan vault it moves the blob
+into the backup's `orphans/` directory (recoverable, never deleted) while
+committed blobs stay in place. Fixture commit ids are minted with the
 same formula as the engine (`mint_id`), so the doctor's id re-derivation
 check treats honest fixtures as clean and only flags genuine tampering.
 It also runs the doctor with `--json` against the healthy, dangling-parent,
