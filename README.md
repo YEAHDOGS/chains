@@ -31,7 +31,7 @@ Battery saves and save states — the files that hold *your progress*:
 | GBA | `.sav` | mGBA, VBA-M, RetroArch (mGBA/VBA cores) |
 | Any | `.state*` | save states (emulator-specific, less portable) |
 
-Tracked patterns: `*.srm`, `*.sav`, `*.state*`. Only save data is ever stored — **never ROMs or firmware** (those live in [arcade/](../arcade/)).
+Tracked patterns: `*.srm`, `*.sav`, `*.state*`. Only save data is ever stored — **never ROMs or firmware** (those live in the separate `arcade/` project).
 
 > Save states are emulator-version-sensitive; battery saves (`.srm`/`.sav`) are the portable, future-proof format. When in doubt, save in-game, not just save-state.
 
