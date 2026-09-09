@@ -6,6 +6,10 @@
 #   - config.json validity
 #   - journal integrity (parseable lines, no duplicate ids, no dangling
 #     parent refs -- the commit chain must be unbroken)
+#   - commit id re-derivation: every commit id is recomputed from its
+#     parent id, timestamp, message, and file list, exactly like
+#     `chains.ps1 verify` -- any hand-edit to a journal entry breaks the
+#     tamper-evident chain even when the parent refs still line up
 #   - snapshot presence: every blob the journal names must exist, and every
 #     blob's bytes must still hash to its own name (read-only re-hash)
 #   - orphan snapshots (present on disk, referenced by no commit)
@@ -112,7 +116,7 @@ report() {  # report <severity> <message>   severity: ok | warn | fail | info
 # emitted as a tagged line: OK / WARN / FAIL / INFO. bash tallies the tags
 # and derives the exit code. python never touches the disk except reading.
 RESULTS="$(python3 - "$CHAINS" "$STALE_AFTER_DAYS" <<'PYEOF'
-import json, os, sys, re
+import hashlib, json, os, sys, re
 from datetime import datetime, timezone
 
 chains_dir = sys.argv[1]
@@ -197,6 +201,44 @@ if entries:
         if not re.fullmatch(r"[0-9a-f]{12}", cid):
             warn("commit id does not look engine-minted (12 hex chars): %s" % cid)
     ok("commit chain is unbroken (%d link(s) checked)" % len(entries))
+
+    # --- 2b. commit id re-derivation (tamper-evident chain) -----------------
+    # The engine mints each id as the first 12 hex chars of
+    #   SHA256("<parent>|<ts>|<message>|<sorted key=sha256 list joined by ,>")
+    # (vault.ps1 New-SaveCommitId). Re-deriving the ids catches any
+    # hand-edit of a journal entry -- message, file list, timestamp -- even
+    # when the parent refs still line up, mirroring `chains.ps1 verify`
+    # (Test-SaveChain). PowerShell's Sort-Object is case-insensitive, so
+    # the sort here is casefolded to match. Entries without a "parent"
+    # field predate chaining and are skipped, exactly like the engine's
+    # legacy path -- their blobs are still re-hashed in check 6.
+    id_bad = 0
+    id_checked = 0
+    id_legacy = 0
+    for e in entries:
+        if "parent" not in e:
+            id_legacy += 1
+            continue
+        parent = e.get("parent") or ""
+        ts = e.get("ts") or ""
+        message = e.get("message") or ""
+        files = e.get("files") or []
+        if not isinstance(files, list):
+            files = []
+        tree = ",".join(sorted(
+            (("%s=%s" % ((f or {}).get("key", ""), (f or {}).get("sha256", "")))
+             for f in files),
+            key=str.casefold))
+        seed = "%s|%s|%s|%s" % (parent, ts, message, tree)
+        expected = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+        id_checked += 1
+        if expected != e["id"]:
+            id_bad += 1
+            fail("commit %s fails the integrity check -- journal entry was modified (id re-derivation mismatch)" % e["id"])
+    if id_bad == 0 and id_checked > 0:
+        ok("commit ids re-derived clean (%d checked)" % id_checked)
+    if id_legacy:
+        info("%d legacy pre-chain commit(s) skipped (no parent link)" % id_legacy)
 
 # --- 3. snapshots: presence + byte-identity --------------------------------
 referenced = {}   # sha256 -> [commit ids]
