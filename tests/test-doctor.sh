@@ -2,11 +2,12 @@
 # =============================================================================
 # Regression tests for chains doctor (scripts/chains-doctor.sh).
 #
-# Builds seven fixture vaults in a temp dir -- healthy, dangling parent ref,
+# Builds eight fixture vaults in a temp dir -- healthy, dangling parent ref,
 # missing pins, stale sync, broken journal, working-tree drift, untracked
-# saves -- plus a --json pass over the healthy/dangling/stale/drift/
-# untracked fixtures, runs the doctor against each, and asserts the exit code (0 healthy / 1 warnings /
-# 2 errors), the machine-readable report schema, plus key output markers.
+# saves, journal tampering -- plus a --json pass over the healthy/dangling/
+# stale/drift/untracked/tampered fixtures, runs the doctor against each, and
+# asserts the exit code (0 healthy / 1 warnings / 2 errors), the
+# machine-readable report schema, plus key output markers.
 # Also asserts the doctor is read-only: a hash of every file in the fixture
 # vault must be identical before and after the run.
 #
@@ -59,6 +60,22 @@ print(json.dumps({"id":sys.argv[1],"parent":sys.argv[2],"ts":sys.argv[3],
         "$1" "$2" "$3" "$4" "$5"
 }
 
+# mint_id <parent> <ts> <msg> <files_json> : engine-identical commit id.
+# Mirrors vault.ps1 New-SaveCommitId: sha256("<parent>|<ts>|<msg>|
+# <sorted key=sha256 list joined by ,>"), first 12 hex chars. PowerShell's
+# Sort-Object is case-insensitive, hence the casefold sort key. Fixture
+# ids must be engine-minted so the doctor's id re-derivation check treats
+# honest fixtures as clean and only flags genuine tampering.
+mint_id() {
+    python3 -c '
+import hashlib,json,sys
+parent,ts,msg=sys.argv[1],sys.argv[2],sys.argv[3]
+files=json.loads(sys.argv[4])
+tree=",".join(sorted(("%s=%s"%(f["key"],f["sha256"]) for f in files),key=str.casefold))
+print(hashlib.sha256(("%s|%s|%s|%s"%(parent,ts,msg,tree)).encode("utf-8")).hexdigest()[:12])' \
+        "$1" "$2" "$3" "$4"
+}
+
 iso_now()     { python3 -c 'from datetime import datetime,timezone; print(datetime.now(timezone.utc).isoformat())'; }
 iso_days_ago() { python3 -c 'from datetime import datetime,timezone,timedelta; print((datetime.now(timezone.utc)-timedelta(days=int(__import__("sys").argv[1]))).isoformat())' "$1"; }
 
@@ -96,8 +113,11 @@ print(json.dumps([
   {"key":w+"::game.sav","rel":"game.sav","sha256":sys.argv[3],"bytes":6}]))
 PY
 )"
-commit_entry "a1b2c3d4e5f6" "" "$(iso_now)" "first" "$FILES1" > "$V1/.chains/journal.jsonl"
-commit_entry "b2c3d4e5f6a7" "a1b2c3d4e5f6" "$(iso_now)" "second" "$FILES1" >> "$V1/.chains/journal.jsonl"
+TS1A="$(iso_now)"; TS1B="$(iso_now)"
+ID1A="$(mint_id "" "$TS1A" "first" "$FILES1")"
+ID1B="$(mint_id "$ID1A" "$TS1B" "second" "$FILES1")"
+commit_entry "$ID1A" "" "$TS1A" "first" "$FILES1" > "$V1/.chains/journal.jsonl"
+commit_entry "$ID1B" "$ID1A" "$TS1B" "second" "$FILES1" >> "$V1/.chains/journal.jsonl"
 
 # --- fixture 2: dangling parent ref -------------------------------------------
 V2="$(mkvault dangling)"
@@ -108,8 +128,13 @@ import json,sys
 print(json.dumps([{"key":"w::x.srm","rel":"x.srm","sha256":sys.argv[1],"bytes":6}]))
 PY
 )"
-commit_entry "a1b2c3d4e5f6" "" "$(iso_now)" "first" "$F2" > "$V2/.chains/journal.jsonl"
-commit_entry "deadbeef1234" "nope-not-a-real-parent" "$(iso_now)" "bad" "$F2" >> "$V2/.chains/journal.jsonl"
+TS2A="$(iso_now)"; TS2B="$(iso_now)"
+ID2A="$(mint_id "" "$TS2A" "first" "$F2")"
+# the bad entry's id is honestly derived FROM its bogus parent, so the only
+# finding is the dangling ref -- not an id mismatch.
+ID2B="$(mint_id "nope-not-a-real-parent" "$TS2B" "bad" "$F2")"
+commit_entry "$ID2A" "" "$TS2A" "first" "$F2" > "$V2/.chains/journal.jsonl"
+commit_entry "$ID2B" "nope-not-a-real-parent" "$TS2B" "bad" "$F2" >> "$V2/.chains/journal.jsonl"
 
 # --- fixture 3: missing pins (synced vault, pins wiped) -----------------------
 V3="$(mkvault missingpin)"
@@ -120,7 +145,9 @@ import json,sys
 print(json.dumps([{"key":"w::y.srm","rel":"y.srm","sha256":sys.argv[1],"bytes":6}]))
 PY
 )"
-commit_entry "a1b2c3d4e5f6" "" "$(iso_now)" "first" "$F3" > "$V3/.chains/journal.jsonl"
+TS3="$(iso_now)"
+ID3="$(mint_id "" "$TS3" "first" "$F3")"
+commit_entry "$ID3" "" "$TS3" "first" "$F3" > "$V3/.chains/journal.jsonl"
 
 # --- fixture 4: stale sync ----------------------------------------------------
 V4="$(mkvault stale)"
@@ -137,12 +164,15 @@ import json,sys
 print(json.dumps([{"key":"w::z.srm","rel":"z.srm","sha256":sys.argv[1],"bytes":6}]))
 PY
 )"
-commit_entry "a1b2c3d4e5f6" "" "$(iso_now)" "first" "$F4" > "$V4/.chains/journal.jsonl"
+TS4="$(iso_now)"
+ID4="$(mint_id "" "$TS4" "first" "$F4")"
+commit_entry "$ID4" "" "$TS4" "first" "$F4" > "$V4/.chains/journal.jsonl"
 
 # --- fixture 5: broken journal line --------------------------------------------
 V5="$(mkvault broken)"
 write_config "$V5" '{"version":1,"created":"2026-09-01T00:00:00+00:00","watchPaths":[]}'
-{ echo '{"id":"a1b2c3d4e5f6","parent":"","files":[]}'; echo 'this is not json{'; } > "$V5/.chains/journal.jsonl"
+ID5="$(mint_id "" "" "" "[]")"
+{ echo "{\"id\":\"$ID5\",\"parent\":\"\",\"files\":[]}"; echo 'this is not json{'; } > "$V5/.chains/journal.jsonl"
 
 # --- fixture 6: working-tree drift (played but uncommitted) ------------------
 V6="$(mkvault drift)"
@@ -165,8 +195,11 @@ print(json.dumps([
   {"key":w+"::game.sav","rel":"game.sav","sha256":sys.argv[3],"bytes":6}]))
 PY
 )"
-commit_entry "a1b2c3d4e5f6" "" "$(iso_now)" "first" "$FILES6" > "$V6/.chains/journal.jsonl"
-commit_entry "b2c3d4e5f6a7" "a1b2c3d4e5f6" "$(iso_now)" "second" "$FILES6" >> "$V6/.chains/journal.jsonl"
+TS6A="$(iso_now)"; TS6B="$(iso_now)"
+ID6A="$(mint_id "" "$TS6A" "first" "$FILES6")"
+ID6B="$(mint_id "$ID6A" "$TS6B" "second" "$FILES6")"
+commit_entry "$ID6A" "" "$TS6A" "first" "$FILES6" > "$V6/.chains/journal.jsonl"
+commit_entry "$ID6B" "$ID6A" "$TS6B" "second" "$FILES6" >> "$V6/.chains/journal.jsonl"
 # ...then the player keeps playing: the live .srm no longer matches HEAD.
 printf 'SAVE-F-PLAYED-ON' > "$W6/game.srm"
 
@@ -189,7 +222,31 @@ w=sys.argv[1]
 print(json.dumps([{"key":w+"::game.srm","rel":"game.srm","sha256":sys.argv[2],"bytes":6}]))
 PY
 )"
-commit_entry "a1b2c3d4e5f6" "" "$(iso_now)" "first" "$FILES7" > "$V7/.chains/journal.jsonl"
+TS7="$(iso_now)"
+ID7="$(mint_id "" "$TS7" "first" "$FILES7")"
+commit_entry "$ID7" "" "$TS7" "first" "$FILES7" > "$V7/.chains/journal.jsonl"
+
+# --- fixture 8: journal tampering (message edited after commit) ----------------
+# The entry's id was minted honestly, then the message was rewritten by
+# hand. Parent refs, id format, and blob hashes all still look intact --
+# only the id re-derivation check catches the edit. Mirrors the Pester
+# "detects journal tampering" case for `chains.ps1 verify`.
+V8="$(mkvault tampered)"
+W8="$V8/saves"; mkdir -p "$W8"
+printf 'SAVE-T' > "$W8/game.srm"
+SHA_T="$(mkblob "$V8" 'SAVE-T')"
+write_config "$V8" '{"version":1,"created":"2026-09-01T00:00:00+00:00","watchPaths":[]}'
+FT="$(python3 - "$W8" "$SHA_T" <<'PY'
+import json,sys
+w=sys.argv[1]
+print(json.dumps([{"key":w+"::game.srm","rel":"game.srm","sha256":sys.argv[2],"bytes":6}]))
+PY
+)"
+TS8="$(iso_now)"
+ID8="$(mint_id "" "$TS8" "honest message" "$FT")"
+commit_entry "$ID8" "" "$TS8" "honest message" "$FT" | \
+  python3 -c 'import json,sys; e=json.loads(sys.stdin.read()); e["message"]="forged message"; print(json.dumps(e))' \
+  > "$V8/.chains/journal.jsonl"
 
 # --- run the doctor ------------------------------------------------------------
 echo ""
@@ -241,6 +298,11 @@ assert_contains "$OUT" "not tracked in HEAD" "untracked saves reported"
 assert_contains "$OUT" "newgame.srm" "untracked flat save named"
 assert_contains "$OUT" "sub/secret.state" "untracked nested save named"
 
+run_doctor "$V8"
+assert_exit 2 "$CODE" "journal tampering"
+assert_contains "$OUT" "fails the integrity check" "tamper reported"
+assert_contains "$OUT" "id re-derivation mismatch" "tamper detail reported"
+
 # --fix must stay report-only: no writes, same health verdict
 BEFORE_FIX="$(snapshot_fixture "$V1")"
 OUT_FIX="$("$DOCTOR" --fix "$V1" 2>&1)"; CODE_FIX=$?
@@ -285,7 +347,7 @@ fi
 [ "$(json_field "$JOUT" 'd["summary"]["commit_count"]')" = "2" ] && pass "--json summary commit_count" || fail "--json summary commit_count"
 [ "$(json_field "$JOUT" 'd["summary"]["blob_count"]')" = "2" ] && pass "--json summary blob_count" || fail "--json summary blob_count"
 [ "$(json_field "$JOUT" 'd["summary"]["pin_count"]')" = "1" ] && pass "--json summary pin_count" || fail "--json summary pin_count"
-[ "$(json_field "$JOUT" 'd["summary"]["head"]')" = "b2c3d4e5f6a7" ] && pass "--json summary head id" || fail "--json summary head id"
+[ "$(json_field "$JOUT" 'd["summary"]["head"]')" = "$ID1B" ] && pass "--json summary head id" || fail "--json summary head id"
 # every finding has severity + message, severity drawn from the known set
 if python3 - "$JOUT" <<'PY' 2>/dev/null; then
 import json,sys
@@ -345,6 +407,19 @@ assert any("sub/secret.state" in f["message"] for f in warns), "nested untracked
     pass "--json carries both untracked findings"
 else
     fail "--json carries both untracked findings"
+fi
+
+run_doctor_json "$V8"
+assert_exit 2 "$JCODE" "--json on tampered vault"
+[ "$(json_field "$JOUT" 'd["result"]')" = "errors" ] && pass "--json tampered result=errors" || fail "--json tampered result=errors"
+if printf '%s' "$JOUT" | python3 -c '
+import json,sys
+d=json.loads(sys.stdin.read())
+fails=[f for f in d["findings"] if f["severity"]=="fail" and "integrity check" in f["message"]]
+assert fails, "no tamper finding in --json"'; then
+    pass "--json carries the tamper finding"
+else
+    fail "--json carries the tamper finding"
 fi
 
 echo ""
