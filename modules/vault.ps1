@@ -641,3 +641,58 @@ function Fetch-Chains {
     Write-Host "  [OK] Fetched from ${RemoteRoot}: $Added new commit(s), $Staged new blob(s)." -ForegroundColor Green
     return [pscustomobject]@{ VaultId = $Id; EntriesAdded = $Added; BlobsFetched = $Staged }
 }
+
+# ==============================================================================
+# Log -- structured history for `chains log`
+# ==============================================================================
+
+function Get-SaveLog {
+    <#
+    .SYNOPSIS
+        History newest-first as structured entries. Each entry carries the
+        commit id, timestamp, message, file count, and a per-commit delta
+        (added/modified/deleted) computed against its parent commit, so the
+        log reads like a changelog instead of a bare id list.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Paths,
+        [int]$Count = 0
+    )
+    $Journal = @(Get-SaveJournal -Paths $Paths)
+    if ($Journal.Count -eq 0) { return @() }
+    $ById = @{}
+    foreach ($c in $Journal) { $ById[$c.id] = $c }
+    $Ordered = @($Journal | Sort-Object { $_.ts } -Descending)
+    if ($Count -gt 0) { $Ordered = @($Ordered | Select-Object -First $Count) }
+    $Result = @()
+    foreach ($c in $Ordered) {
+        $Parent = $null
+        if ($c.parent -and $ById.ContainsKey($c.parent)) { $Parent = $ById[$c.parent] }
+        $ParentMap = @{}
+        if ($Parent) { foreach ($f in @($Parent.files)) { $ParentMap[$f.key] = $f.sha256 } }
+        $Added = 0; $Modified = 0; $Deleted = 0
+        $CurKeys = @{}
+        foreach ($f in @($c.files)) {
+            $CurKeys[$f.key] = $true
+            if (-not $ParentMap.ContainsKey($f.key)) { $Added++ }
+            elseif ($ParentMap[$f.key] -ne $f.sha256) { $Modified++ }
+        }
+        if ($Parent) {
+            foreach ($k in $ParentMap.Keys) { if (-not $CurKeys.ContainsKey($k)) { $Deleted++ } }
+        }
+        else {
+            # Root commit (or legacy commit without a parent link): everything is new.
+            $Added = @($c.files).Count
+        }
+        $Result += [pscustomobject]@{
+            Id       = $c.id
+            When     = $c.ts
+            Message  = $c.message
+            Files    = @($c.files).Count
+            Added    = $Added
+            Modified = $Modified
+            Deleted  = $Deleted
+        }
+    }
+    return $Result
+}

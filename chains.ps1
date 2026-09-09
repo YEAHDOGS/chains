@@ -9,10 +9,12 @@
     .\chains.ps1 init
     .\chains.ps1 watch -Known
     .\chains.ps1 commit -m "beat the Elite Four"
-    .\chains.ps1 log
+    .\chains.ps1 log -n 5 -Oneline
     .\chains.ps1 diff abc123 def456
     .\chains.ps1 restore abc123
     .\chains.ps1 verify
+    .\chains.ps1 push -Remote "E:\chains-remote"
+    .\chains.ps1 fetch -Remote "\\CASTLE\chains"
 #>
 param(
     [Parameter(Position = 0)]
@@ -37,7 +39,16 @@ param(
     [switch]$NoBackup,
 
     [Parameter()]
-    [switch]$Force
+    [switch]$Force,
+
+    [Parameter()]
+    [int]$n,
+
+    [Parameter()]
+    [switch]$Oneline,
+
+    [Parameter()]
+    [string]$Remote
 )
 
 $ModuleRoot = Join-Path $PSScriptRoot "modules"
@@ -59,10 +70,12 @@ function Show-Usage {
     Write-Host "  .\chains.ps1 watch -Add <dir>      Watch an explicit directory" -ForegroundColor White
     Write-Host "  .\chains.ps1 commit -m ""msg""       Snapshot current saves" -ForegroundColor White
     Write-Host "  .\chains.ps1 status                Diff working tree vs HEAD" -ForegroundColor White
-    Write-Host "  .\chains.ps1 log                   Show commit history" -ForegroundColor White
+    Write-Host "  .\chains.ps1 log [-n 10] [-Oneline]  History, newest first" -ForegroundColor White
     Write-Host "  .\chains.ps1 diff <a> <b>          Compare two commits" -ForegroundColor White
     Write-Host "  .\chains.ps1 restore <ref>         Restore a commit (auto-backs up first)" -ForegroundColor White
     Write-Host "  .\chains.ps1 verify                Check journal + blob integrity" -ForegroundColor White
+    Write-Host "  .\chains.ps1 push -Remote <dir>    Push vault to a local remote" -ForegroundColor White
+    Write-Host "  .\chains.ps1 fetch -Remote <dir>   Fetch from a local remote" -ForegroundColor White
     Write-Host ""
     Write-Host "  -Path <dir> selects the vault root (default: current directory)." -ForegroundColor DarkGray
     Write-Host ""
@@ -103,15 +116,31 @@ switch ($Command.ToLower()) {
     }
     "log" {
         $Paths = Get-VaultPaths -VaultRoot $VaultRoot
-        $Journal = Get-SaveJournal -Paths $Paths
-        if ($Journal.Count -eq 0) { Write-Host "  [i] No commits yet." -ForegroundColor DarkGray; break }
+        $Entries = @(Get-SaveLog -Paths $Paths -Count $n)
+        if ($Entries.Count -eq 0) { Write-Host "  [i] No commits yet." -ForegroundColor DarkGray; break }
         Write-Host ""
-        foreach ($c in ($Journal | Sort-Object ts -Descending)) {
-            $When = ([datetime]$c.ts).ToLocalTime().ToString("yyyy-MM-dd HH:mm")
-            Write-Host "  $($c.id)  $When  ($($c.files.Count) files)" -ForegroundColor Cyan
-            if ($c.message) { Write-Host "      $($c.message)" -ForegroundColor White }
+        foreach ($e in $Entries) {
+            $When = ([datetime]$e.When).ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+            $Delta = "+$($e.Added) ~$($e.Modified) -$($e.Deleted)"
+            if ($Oneline) {
+                Write-Host "  $($e.Id)  $When  $Delta  $($e.Message)" -ForegroundColor Cyan
+            }
+            else {
+                Write-Host "  $($e.Id)  $When  ($($e.Files) files, $Delta)" -ForegroundColor Cyan
+                if ($e.Message) { Write-Host "      $($e.Message)" -ForegroundColor White }
+            }
         }
         Write-Host ""
+    }
+    "push" {
+        if (-not $Remote) { Write-Host "  [FAIL] Usage: .\chains.ps1 push -Remote <dir>" -ForegroundColor Red; Exit 1 }
+        $Paths = Get-VaultPaths -VaultRoot $VaultRoot
+        Push-Chains -Paths $Paths -RemoteRoot $Remote | Out-Null
+    }
+    "fetch" {
+        if (-not $Remote) { Write-Host "  [FAIL] Usage: .\chains.ps1 fetch -Remote <dir>" -ForegroundColor Red; Exit 1 }
+        $Paths = Get-VaultPaths -VaultRoot $VaultRoot
+        Fetch-Chains -Paths $Paths -RemoteRoot $Remote | Out-Null
     }
     "verify" {
         $Paths = Get-VaultPaths -VaultRoot $VaultRoot
