@@ -21,20 +21,24 @@
 # in this pass; it only points at the manual repair steps in docs/DOCTOR.md.
 #
 # Exit codes: 0 = healthy, 1 = warnings only, 2 = errors found.
+# --json switches the report to a single machine-readable JSON document on
+# stdout (same findings, same exit codes) for scripts and CI.
 # Needs: bash, python3 (stdlib only), df, sha256sum. No network, no installs.
 # =============================================================================
 set -u
 
 VAULT="."
 FIX=0
+JSON=0
 MIN_FREE_MB="${CHAINS_DOCTOR_MIN_FREE_MB:-1024}"  # warn below 1 GiB free on the vault's filesystem
 STALE_AFTER_DAYS=7      # warn when the newest pin is older than this
 
 usage() {
-    echo "Usage: $(basename "$0") [vault-root] [--fix]"
+    echo "Usage: $(basename "$0") [vault-root] [--fix] [--json]"
     echo ""
     echo "  vault-root   Directory containing .chains/ (default: current dir)."
     echo "  --fix        Accepted for forward-compat; performs no writes (report-only)."
+    echo "  --json       Machine-readable report: one JSON document on stdout."
     echo ""
     echo "Exit codes: 0 healthy, 1 warnings, 2 errors."
 }
@@ -42,6 +46,7 @@ usage() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --fix) FIX=1; shift ;;
+        --json) JSON=1; shift ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "  [FAIL] Unknown option: $1" >&2; usage >&2; exit 2 ;;
         *) VAULT="$1"; shift ;;
@@ -69,9 +74,34 @@ if [ ! -d "$CHAINS" ]; then
     exit 2
 fi
 
-echo ""
-echo "  chains doctor -- $VAULT"
-echo "  ================================================================"
+if [ "$JSON" -eq 0 ]; then
+    echo ""
+    echo "  chains doctor -- $VAULT"
+    echo "  ================================================================"
+fi
+
+# --- reporting ---------------------------------------------------------------
+# Every finding flows through report(): human mode prints the familiar
+# bracketed lines, JSON mode accumulates machine-readable records in a
+# throwaway temp file (never in the vault -- the read-only contract holds).
+# Both modes derive the same exit code from the same WARN/FAIL tallies.
+FINDINGS="$(mktemp)"
+trap 'rm -f "$FINDINGS"' EXIT
+
+report() {  # report <severity> <message>   severity: ok | warn | fail | info
+    local sev="$1" msg="$2"
+    if [ "$JSON" -eq 1 ]; then
+        python3 -c 'import json,sys; print(json.dumps({"severity":sys.argv[1],"message":sys.argv[2]}))' \
+            "$sev" "$msg" >> "$FINDINGS"
+    else
+        case "$sev" in
+            ok)   echo "  [OK] $msg" ;;
+            warn) echo "  [~] $msg" ;;
+            fail) echo "  [FAIL] $msg" ;;
+            info) echo "  [i] $msg" ;;
+        esac
+    fi
+}
 
 # The heavy lifting (JSON parsing) runs in python3 stdlib; every finding is
 # emitted as a tagged line: OK / WARN / FAIL / INFO. bash tallies the tags
@@ -273,21 +303,21 @@ while IFS= read -r line; do
             SUMMARY_JSON="${line#SUMMARY:}"
             ;;
         OK\ \ \|*)
-            echo "  [OK] ${line#OK  |}"
+            report ok "${line#OK  |}"
             ;;
         WARN\|*)
-            echo "  [~] ${line#WARN|}"
+            report warn "${line#WARN|}"
             WARNINGS=$((WARNINGS + 1))
             ;;
         FAIL\|*)
-            echo "  [FAIL] ${line#FAIL|}"
+            report fail "${line#FAIL|}"
             ERRORS=$((ERRORS + 1))
             ;;
         INFO\|*)
-            echo "  [i] ${line#INFO|}"
+            report info "${line#INFO|}"
             ;;
         *)
-            [ -n "$line" ] && echo "  [?] $line"
+            [ -n "$line" ] && report info "[?] $line"
             ;;
     esac
 done <<< "$RESULTS"
@@ -302,20 +332,20 @@ if [ -n "$SUMMARY_JSON" ]; then
             [ -z "$sha" ] && continue
             f="$CHAINS/snapshots/$sha"
             if [ ! -f "$f" ]; then
-                echo "  [FAIL] missing snapshot blob: $sha"
+                report fail "missing snapshot blob: $sha"
                 ERRORS=$((ERRORS + 1))
                 continue
             fi
             CHECKED=$((CHECKED + 1))
             ACTUAL="$(sha256sum "$f" | awk '{print $1}')"
             if [ "$ACTUAL" != "$sha" ]; then
-                echo "  [FAIL] blob hash mismatch (corrupt): $sha"
+                report fail "blob hash mismatch (corrupt): $sha"
                 ERRORS=$((ERRORS + 1))
                 BAD_HASH=$((BAD_HASH + 1))
             fi
         done <<< "$BLOBS"
         if [ "$BAD_HASH" -eq 0 ]; then
-            echo "  [OK] $CHECKED blob(s) present and re-hashed clean"
+            report ok "$CHECKED blob(s) present and re-hashed clean"
         fi
         # orphan snapshots: on disk but referenced by no commit
         ORPHANS=0
@@ -323,7 +353,7 @@ if [ -n "$SUMMARY_JSON" ]; then
             base="$(basename "$diskfile")"
             case "$BLOBS" in
                 *"$base"*) ;;
-                *) echo "  [~] orphan snapshot (unreferenced by any commit): $base"
+                *) report warn "orphan snapshot (unreferenced by any commit): $base"
                    ORPHANS=$((ORPHANS + 1)) ;;
             esac
         done < <(find "$CHAINS/snapshots" -maxdepth 1 -type f 2>/dev/null)
@@ -348,14 +378,14 @@ for f in s["head_files"]:
                 continue  # no "::" separator -- can't resolve, skip quietly
             fi
             if [ ! -e "$watch/$rel" ]; then
-                echo "  [~] HEAD save file missing from working tree: $watch/$rel"
+                report warn "HEAD save file missing from working tree: $watch/$rel"
                 MISSING_SRC=$((MISSING_SRC + 1))
             fi
         done <<< "$HEAD_FILES"
         WARNINGS=$((WARNINGS + MISSING_SRC))
         if [ "$MISSING_SRC" -eq 0 ]; then
             HEAD_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["head"])' "$SUMMARY_JSON")"
-            echo "  [OK] all HEAD ($HEAD_ID) save files present in working tree"
+            report ok "all HEAD ($HEAD_ID) save files present in working tree"
         fi
     fi
 
@@ -365,7 +395,7 @@ for f in s["head_files"]:
         while IFS= read -r w; do
             [ -z "$w" ] && continue
             if [ ! -d "$w" ]; then
-                echo "  [~] watched path no longer exists: $w"
+                report warn "watched path no longer exists: $w"
                 WARNINGS=$((WARNINGS + 1))
             fi
         done <<< "$WATCHES"
@@ -377,21 +407,54 @@ if AVAIL_KB="$(df -k --output=avail "$VAULT" 2>/dev/null | tail -n 1 | tr -d ' '
     if [ -n "$AVAIL_KB" ] && [ "$AVAIL_KB" -ge 0 ] 2>/dev/null; then
         AVAIL_MB=$((AVAIL_KB / 1024))
         if [ "$AVAIL_MB" -lt "$MIN_FREE_MB" ]; then
-            echo "  [~] low disk space on vault filesystem: ${AVAIL_MB} MB free (warn below ${MIN_FREE_MB} MB)"
+            report warn "low disk space on vault filesystem: ${AVAIL_MB} MB free (warn below ${MIN_FREE_MB} MB)"
             WARNINGS=$((WARNINGS + 1))
         else
-            echo "  [OK] disk space: ${AVAIL_MB} MB free"
+            report ok "disk space: ${AVAIL_MB} MB free"
         fi
     fi
 fi
 
-echo ""
 if [ "$FIX" -eq 1 ]; then
-    echo "  [i] --fix requested: no auto-repairs are implemented in this pass."
-    echo "      chains doctor is report-only by design; see docs/DOCTOR.md for"
-    echo "      the manual repair steps for each finding."
-    echo ""
+    report info "--fix requested: report-only, no auto-repairs are implemented in this pass. See docs/DOCTOR.md for the manual repair steps for each finding."
 fi
+
+if [ "$JSON" -eq 1 ]; then
+    # Machine-readable report: one JSON document on stdout, nothing else.
+    # Exit codes match human mode: 0 healthy, 1 warnings, 2 errors.
+    if [ "$ERRORS" -gt 0 ]; then RESULT="errors"; elif [ "$WARNINGS" -gt 0 ]; then RESULT="warnings"; else RESULT="healthy"; fi
+    python3 - "$VAULT" "$RESULT" "$ERRORS" "$WARNINGS" "$SUMMARY_JSON" "$FINDINGS" <<'PYEOF'
+import json, sys
+vault, result, errors, warnings, summary_json, findings_path = (
+    sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]),
+    sys.argv[5], sys.argv[6])
+findings = []
+with open(findings_path, "r", encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            findings.append(json.loads(line))
+try:
+    summary = json.loads(summary_json) if summary_json else {}
+except json.JSONDecodeError:
+    summary = {}
+exit_code = 2 if errors > 0 else (1 if warnings > 0 else 0)
+print(json.dumps({
+    "vault": vault,
+    "result": result,
+    "exit": exit_code,
+    "errors": errors,
+    "warnings": warnings,
+    "findings": findings,
+    "summary": summary,
+}, indent=2))
+PYEOF
+    if [ "$ERRORS" -gt 0 ]; then exit 2; fi
+    if [ "$WARNINGS" -gt 0 ]; then exit 1; fi
+    exit 0
+fi
+
+echo ""
 
 if [ "$ERRORS" -gt 0 ]; then
     echo "  RESULT: $ERRORS error(s), $WARNINGS warning(s) -- vault needs attention."
