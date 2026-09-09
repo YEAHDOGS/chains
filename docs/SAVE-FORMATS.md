@@ -12,6 +12,7 @@ records the real-world formats the fixtures and tests are modeled on.
 | `.srm` | SNES | 8 KB (LoROM) / 32 KB (HiROM) | Snes9x, RetroArch (Snes9x/bsnes cores), BizHawk | Raw SRAM dump, no header |
 | `.sav` | GBA | 32 KB (256Kbit flash/SRAM) / 64 KB (512Kbit flash) | mGBA, VBA-M, RetroArch (mGBA/VBA cores) | Raw flash/SRAM dump, no header |
 | `.sav` | GB/GBC | 8 KB / 32 KB | mGBA, VBA-M, RetroArch | Same raw-dump convention |
+| `.mcr` | PSX | 128 KB | DuckStation, ePSXe, RetroArch (Beetle PSX core) | Raw memory-card dump, no header |
 
 Battery saves are the future-proof format: any emulator for the system can
 read them. Chains' guidance is **save in-game, not just save-state**.
@@ -35,7 +36,11 @@ bytes are only guaranteed meaningful to the emulator build that wrote them.
 
 - **mGBA** may write a `.sav` alongside RTC/timing sidecar data for some
   games; the `.sav` itself stays a raw dump. Sidecars with other extensions
-  are ignored unless they match `*.sav` / `*.srm` / `*.state*`.
+  are ignored unless they match a tracked pattern (`*.sav` / `*.srm` /
+  `*.state*` / `*.mcr`).
+- **DuckStation** memory cards default to `*.mcr` (128 KB raw dumps, one
+  per card slot); per-game cards use the same format, so they track
+  automatically.
 - **RetroArch** save locations vary per core and per config (`saves/` under
   the config dir by default); `watch -Known` covers the defaults, explicit
   `watch -Add` covers the rest.
