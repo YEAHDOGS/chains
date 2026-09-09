@@ -14,6 +14,7 @@ records the real-world formats the fixtures and tests are modeled on.
 | `.sav` | GB/GBC | 8 KB / 32 KB | mGBA, VBA-M, RetroArch | Same raw-dump convention |
 | `.mcr` | PSX | 128 KB | DuckStation, ePSXe, RetroArch (Beetle PSX core) | Raw memory-card dump, no header |
 | `.ps2` | PS2 | 8 MB (16 MB for extended cards) | PCSX2, RetroArch (PCSX2 core) | Raw memory-card dump, no header; default card is 8 MB |
+| `.gci` | GameCube | 8 KB per block (1–4 blocks typical) | Dolphin, RetroArch (Dolphin core) | Per-game save export; 64-byte header opens with the 4-letter game ID |
 | `.dsv` | NDS | 512 KB typical (flash size varies per game) | DeSmuME | Raw save + small DeSmuME footer; Chains stores the bytes opaquely |
 | `.sra` | N64 | 32 KB | Project64, mupen64plus, RetroArch (ParaLLEl core) | SRAM dump, no header |
 | `.eep` | N64 | 2 KB (512-byte for some games) | Project64, mupen64plus, RetroArch (ParaLLEl core) | EEPROM dump, no header |
@@ -43,7 +44,7 @@ bytes are only guaranteed meaningful to the emulator build that wrote them.
 - **mGBA** may write a `.sav` alongside RTC/timing sidecar data for some
   games; the `.sav` itself stays a raw dump. Sidecars with other extensions
   are ignored unless they match a tracked pattern (`*.sav` / `*.srm` /
-  `*.state*` / `*.mcr` / `*.ps2` / `*.dsv` / `*.SaveRAM` / `*.sra` / `*.eep` / `*.fla`).
+  `*.state*` / `*.mcr` / `*.ps2` / `*.gci` / `*.dsv` / `*.SaveRAM` / `*.sra` / `*.eep` / `*.fla`).
 - **DeSmuME** writes `.dsv` battery saves (raw flash data plus a small
   DeSmuME footer) — by default in its Battery folder next to the ROM path.
   Chains never parses the footer; the snapshot is the full file bytes, so
@@ -56,6 +57,11 @@ bytes are only guaranteed meaningful to the emulator build that wrote them.
   round-trip as opaque bytes; the full card is one snapshot blob, so an
   8 MB card costs 8 MB of vault per unique state — dedupe still applies,
   but note the card is one commit-granularity blob, not per-game.
+- **Dolphin** exports per-game GameCube saves as `*.gci` (whole-block files,
+  8 KB per block; first 4 bytes are the game's 4-letter ID, e.g. `GM8E`).
+  Raw memory-card dumps (`*.raw`) are *not* tracked — one `*.gci` per game
+  is the portable unit, and the opaque-bytes rule means a card dump would
+  still round-trip as a blob if tracked manually.
 - **RetroArch** save locations vary per core and per config (`saves/` under
   the config dir by default); `watch -Known` covers the defaults, explicit
   `watch -Add` covers the rest.
