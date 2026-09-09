@@ -160,6 +160,26 @@ function Find-SaveCommit {
     return $null  # none, or ambiguous prefix
 }
 
+function New-SaveCommitId {
+    <#
+    .SYNOPSIS
+        Derives a 12-hex-char commit id from the parent commit id, timestamp,
+        message, and file list. Including the parent id chains every commit
+        to its predecessor: same-tick commits can never collide, a
+        restore-then-recommit always yields a fresh id, and the journal is
+        tamper-evident end to end.
+    #>
+    param(
+        [string]$ParentId = "",
+        [Parameter(Mandatory = $true)][string]$Timestamp,
+        [string]$Message = "",
+        [array]$FileList = @()
+    )
+    $TreePart = (($FileList | ForEach-Object { "$($_.key)=$($_.sha256)" } | Sort-Object) -join ",")
+    $Seed = "$ParentId|$Timestamp|$Message|$TreePart"
+    return ((Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($Seed))) -Algorithm SHA256).Hash.ToLower()).Substring(0, 12)
+}
+
 function New-SaveCommit {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Paths,
@@ -205,8 +225,8 @@ function New-SaveCommit {
     }
 
     $Ts = (Get-Date).ToUniversalTime().ToString("o")
-    $IdSeed = $Ts + "|" + $Message + "|" + (($FileList | ForEach-Object { "$($_.key)=$($_.sha256)" } | Sort-Object) -join ",")
-    $Id = ((Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($IdSeed))) -Algorithm SHA256).Hash.ToLower()).Substring(0, 12)
+    $ParentId = if ($Head) { $Head.id } else { "" }
+    $Id = New-SaveCommitId -ParentId $ParentId -Timestamp $Ts -Message $Message -FileList $FileList
 
     $Entry = [pscustomobject]@{
         id      = $Id
