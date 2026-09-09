@@ -12,7 +12,7 @@ as the source of truth for the board's contents.
 ## Now
 
 - **Network sync backend** — implement `push`/`fetch` against a real sync
-  server per [SYNC.md](SYNC.md)'s backend contract (`PUT /sync/upload/chains/<vault-id>/<sha256>`,
+  server per [SYNC.md](../SYNC.md)'s backend contract (`PUT /sync/upload/chains/<vault-id>/<sha256>`,
   journal as manifest). Requirements from the contract: TLS, token auth,
   default-deny (explicit opt-in, never silent). Local-filesystem backend
   already ships (`scripts/chains-sync.sh`).
