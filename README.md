@@ -22,6 +22,16 @@ cd ~\Documents           # or wherever you want the vault to live
 .\chains.ps1 verify              # prove the journal + snapshots are untampered
 ```
 
+**Bash users:** `./chains.sh` is a dispatcher twin with the same flags,
+commands, and exit codes — it parses argv in bash and delegates each
+command to `pwsh` running the one canonical engine (`modules/vault.ps1`),
+so behavior is identical by construction. Needs PowerShell Core installed;
+without it, engine commands fail closed. (Why the engine itself stays
+PowerShell: [docs/ENGINE-PORT-DECISION.md](docs/ENGINE-PORT-DECISION.md).)
+For the moments PowerShell isn't around at all, the dependency-free twins
+`scripts/chains-doctor.sh` (health check) and `scripts/chains-sync.sh`
+(push/fetch) work standalone.
+
 ## What Gets Tracked
 
 Battery saves and save states — the files that hold *your progress*:
@@ -91,6 +101,15 @@ Invoke-Pester -Path ./tests
 ```
 
 Every test builds a throwaway vault under the OS temp folder — nothing touches real saves.
+
+The bash side has its own suites (run from the repo root, no PowerShell needed):
+
+```bash
+bash tests/test-chains-sh.sh   # chains.sh dispatcher: 80 assertions via a pwsh shim
+bash tests/test-doctor.sh      # chains-doctor.sh: 87 assertions
+bash tests/test-sync.sh        # chains-sync.sh: 50 assertions
+bash tests/test-sync-plan.sh   # chains-sync-plan.sh: 31 assertions
+```
 
 ## Origin
 
