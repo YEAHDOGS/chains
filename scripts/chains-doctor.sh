@@ -24,15 +24,27 @@
 #   - last-sync staleness from pin timestamps
 #   - disk-space sanity on the vault's filesystem
 #
-# READ-ONLY BY CONTRACT: this script never creates, modifies, or deletes
-# anything inside (or outside) the vault. There are no write code paths --
-# --fix is accepted for CLI forward-compatibility but performs zero writes
-# in this pass; it only points at the manual repair steps in docs/DOCTOR.md.
+# READ-ONLY BY DEFAULT: without --fix this script never creates, modifies,
+# or deletes anything inside (or outside) the vault -- the read-only contract
+# holds and the fixture suite asserts it.
 #
-# Exit codes: 0 = healthy, 1 = warnings only, 2 = errors found.
+# --fix performs a bounded set of safe, reversible repairs -- and ONLY these:
+#   1. malformed remote pin entries are deleted from config.json (DOCTOR.md:
+#      a wiped remote simply re-pins on the next push, TOFU-style);
+#   2. orphan snapshots are MOVED (never deleted) into the repair backup.
+# Every other finding stays report-only -- the doctor cannot fabricate
+# missing blobs, un-edit a tampered journal, or invent commit data.
+# Before any write, --fix snapshots .chains/config.json and
+# .chains/journal.jsonl into .chains/repair-backups/<utc-timestamp>/ and
+# writes a repairs.json manifest there, so every repair is reversible by
+# hand. No network code, no installs, no writes outside the vault.
+#
+# Exit codes: 0 = healthy, 1 = warnings only, 2 = errors found. With --fix,
+# the exit code reflects the PRE-REPAIR scan -- re-run the doctor to
+# confirm the vault is clean afterwards.
 # --json switches the report to a single machine-readable JSON document on
 # stdout (same findings, same exit codes) for scripts and CI.
-# Needs: bash, python3 (stdlib only), df, sha256sum. No network, no installs.
+# Needs: bash, python3 (stdlib only), df, sha256sum.
 # =============================================================================
 set -u
 
@@ -46,7 +58,8 @@ usage() {
     echo "Usage: $(basename "$0") [vault-root] [--fix] [--json]"
     echo ""
     echo "  vault-root   Directory containing .chains/ (default: current dir)."
-    echo "  --fix        Accepted for forward-compat; performs no writes (report-only)."
+    echo "  --fix        Safe, reversible auto-repairs (pins + orphans) after a"
+    echo "               pre-repair backup of config.json and journal.jsonl."
     echo "  --json       Machine-readable report: one JSON document on stdout."
     echo ""
     echo "Exit codes: 0 healthy, 1 warnings, 2 errors."
@@ -525,8 +538,165 @@ if AVAIL_KB="$(df -k --output=avail "$VAULT" 2>/dev/null | tail -n 1 | tr -d ' '
     fi
 fi
 
+# --- --fix: safe, reversible auto-repairs -----------------------------------
+# Repairs (and ONLY these):
+#   1. malformed remote pin entries -> deleted from config.json
+#      (a bad pin never blocks sync again; the next push/fetch TOFU-re-pins);
+#   2. orphan snapshots -> MOVED to the repair backup, never deleted.
+# Everything else (dangling parents, id mismatches, missing/corrupt blobs,
+# broken journal lines, drift, untracked saves, stale syncs) is report-only:
+# the doctor cannot fabricate bytes or un-edit history.
+#
+# Snapshot-before-repair: every write is preceded by a backup of
+# config.json + journal.jsonl under .chains/repair-backups/<utc-timestamp>/,
+# plus a repairs.json manifest. Reversing a repair is a manual copy-back.
+# If the journal is unparseable or config.json is not a JSON object, no
+# repair is attempted -- the vault is too damaged for safe automation.
 if [ "$FIX" -eq 1 ]; then
-    report info "--fix requested: report-only, no auto-repairs are implemented in this pass. See docs/DOCTOR.md for the manual repair steps for each finding."
+    REPAIR_PLAN="$(python3 - "$CHAINS" <<'PYEOF'
+import json, os, shutil, sys
+from datetime import datetime, timezone
+
+chains_dir = sys.argv[1]
+plan = {"repairs": [], "skipped": [], "backup": None, "error": None}
+
+def plan_repair(kind, detail):
+    plan["repairs"].append({"kind": kind, **detail})
+
+config_path  = os.path.join(chains_dir, "config.json")
+journal_path = os.path.join(chains_dir, "journal.jsonl")
+snap_dir     = os.path.join(chains_dir, "snapshots")
+
+try:
+    with open(config_path, "r", encoding="utf-8-sig") as f:
+        config = json.load(f)
+except Exception as e:
+    plan["skipped"].append("config.json unreadable -- no repairs attempted: %s" % e)
+    print(json.dumps(plan)); sys.exit(0)
+if not isinstance(config, dict):
+    plan["skipped"].append("config.json is not an object -- no repairs attempted")
+    print(json.dumps(plan)); sys.exit(0)
+
+# Malformed pin entries: not an object, or no pinned id list. Mirrors the
+# scan's FAIL predicates in check 4 (missing fingerprint/timestamp is only
+# a warning and is NOT repaired).
+bad_pins = []
+raw_pins = config.get("remotePins") or {}
+if not isinstance(raw_pins, dict):
+    plan["skipped"].append("'remotePins' is not an object -- pin repair skipped")
+else:
+    for key, pin in raw_pins.items():
+        ids = pin.get("ids") if isinstance(pin, dict) else None
+        if not isinstance(pin, dict) or not isinstance(ids, list) or not ids:
+            bad_pins.append(key)
+for key in bad_pins:
+    plan_repair("pin", {"key": key})
+
+# Orphan snapshots: files under snapshots/ the (parseable) journal never
+# names. An unparseable journal means the reference set is unreliable, so
+# nothing is moved in that case.
+orphans = []
+referenced = set()
+journal_ok = os.path.isfile(journal_path)
+if journal_ok:
+    try:
+        with open(journal_path, "r", encoding="utf-8-sig") as f:
+            for line in f.read().splitlines():
+                if line.strip():
+                    referenced |= {f.get("sha256", "") for f in
+                                   (json.loads(line).get("files") or [])}
+        journal_ok = True
+    except Exception as e:
+        plan["skipped"].append("journal.jsonl unparseable -- blob moves skipped: %s" % e)
+        journal_ok = False
+else:
+    plan["skipped"].append("journal.jsonl missing -- blob moves skipped")
+if journal_ok and os.path.isdir(snap_dir):
+    for name in os.listdir(snap_dir):
+        if os.path.isfile(os.path.join(snap_dir, name)) and name not in referenced:
+            orphans.append(name)
+for name in sorted(orphans):
+    plan_repair("orphan", {"blob": name})
+
+if not plan["repairs"]:
+    print(json.dumps(plan)); sys.exit(0)
+
+# --- execute: snapshot first, then repair --------------------------------
+ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+backup = os.path.join(chains_dir, "repair-backups", ts)
+os.makedirs(os.path.join(backup, "orphans"), exist_ok=True)
+for src_name in ("config.json", "journal.jsonl"):
+    src = os.path.join(chains_dir, src_name)
+    if os.path.isfile(src):
+        shutil.copy2(src, os.path.join(backup, src_name))
+plan["backup"] = backup
+
+for rep in plan["repairs"]:
+    if rep["kind"] == "pin":
+        pins = config.setdefault("remotePins", {})
+        pins.pop(rep["key"], None)
+    elif rep["kind"] == "orphan":
+        src = os.path.join(snap_dir, rep["blob"])
+        if os.path.isfile(src):
+            shutil.move(src, os.path.join(backup, "orphans", rep["blob"]))
+        else:
+            rep["skipped"] = "blob already gone"
+
+# Atomic config rewrite (temp file + replace, same directory).
+tmp = os.path.join(chains_dir, "config.json.repair-tmp")
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(config, f, indent=2)
+    f.write("\n")
+os.replace(tmp, config_path)
+
+with open(os.path.join(backup, "repairs.json"), "w", encoding="utf-8") as f:
+    json.dump({
+        "when": datetime.now(timezone.utc).isoformat(),
+        "tool": "chains doctor --fix",
+        "reverses": "restore config.json / journal.jsonl from this directory, "
+                    "and move orphans/<blob> files back to snapshots/",
+        "repairs": plan["repairs"],
+    }, f, indent=2)
+
+print(json.dumps(plan))
+PYEOF
+)"
+    # Guard: a failed plan computation must never be misreported as clean.
+    if [ -z "$REPAIR_PLAN" ]; then
+        report fail "--fix: repair pass failed to run -- no repairs were attempted"
+        REPAIR_PLAN='{"repairs": [], "skipped": ["repair pass produced no output"]}'
+    fi
+    # Report the repair outcome through the normal reporting path, so --json
+    # carries it as ordinary findings.
+    python3 - "$REPAIR_PLAN" <<'PYEOF' | while IFS= read -r line; do
+import json, sys
+plan = json.loads(sys.argv[1])
+def show(s):
+    return s.replace("\n", "\\n").replace("\r", "\\r")
+n = 0
+for rep in plan.get("repairs", []):
+    n += 1
+    if rep["kind"] == "pin":
+        print("OK|repaired: removed malformed remote pin '%s' (next push/fetch re-pins TOFU-style)" % show(rep["key"]))
+    elif rep["kind"] == "orphan":
+        if rep.get("skipped"):
+            print("INFO|repair note: orphan %s was already gone -- skipped" % show(rep["blob"]))
+        else:
+            print("OK|repaired: moved orphan snapshot %s into the repair backup (recoverable, not deleted)" % show(rep["blob"]))
+if n:
+    print("INFO|repair backup: %s -- config.json + journal.jsonl were copied there before any write, and removed pins/orphans are recoverable from it" % show(plan.get("backup") or ""))
+    print("INFO|re-run chains doctor to confirm the vault is clean")
+else:
+    print("INFO|--fix: no auto-repairable issues found -- the remaining findings need manual steps (see docs/DOCTOR.md)")
+for s in plan.get("skipped", []):
+    print("INFO|--fix skipped: %s" % show(s))
+PYEOF
+        case "$line" in
+            OK\|*)   report ok "${line#OK|}" ;;
+            INFO\|*) report info "${line#INFO|}" ;;
+            *)      report info "[?] $line" ;;
+        esac
+    done
 fi
 
 if [ "$JSON" -eq 1 ]; then

@@ -2,14 +2,18 @@
 # =============================================================================
 # Regression tests for chains doctor (scripts/chains-doctor.sh).
 #
-# Builds eight fixture vaults in a temp dir -- healthy, dangling parent ref,
+# Builds ten fixture vaults in a temp dir -- healthy, dangling parent ref,
 # missing pins, stale sync, broken journal, working-tree drift, untracked
-# saves, journal tampering -- plus a --json pass over the healthy/dangling/
-# stale/drift/untracked/tampered fixtures, runs the doctor against each, and
-# asserts the exit code (0 healthy / 1 warnings / 2 errors), the
-# machine-readable report schema, plus key output markers.
-# Also asserts the doctor is read-only: a hash of every file in the fixture
-# vault must be identical before and after the run.
+# saves, journal tampering, malformed pins, orphan snapshots -- plus a --json
+# pass over the healthy/dangling/stale/drift/untracked/tampered fixtures,
+# runs the doctor against each, and asserts the exit code (0 healthy /
+# 1 warnings / 2 errors), the machine-readable report schema, plus key
+# output markers.
+# Also asserts the doctor is read-only WITHOUT --fix: a hash of every file
+# in the fixture vault must be identical before and after the run. --fix is
+# the one write path: the test asserts it repairs exactly the safe issues
+# (malformed pins, orphan snapshots), always takes a pre-repair backup, and
+# writes nothing when there is nothing repairable.
 #
 # Needs: bash, python3 (stdlib only), sha256sum. No network, no installs.
 # Run from the repo root:  bash tests/test-doctor.sh
@@ -248,6 +252,53 @@ commit_entry "$ID8" "" "$TS8" "honest message" "$FT" | \
   python3 -c 'import json,sys; e=json.loads(sys.stdin.read()); e["message"]="forged message"; print(json.dumps(e))' \
   > "$V8/.chains/journal.jsonl"
 
+# --- fixture 9: malformed pins (auto-repairable by --fix) --------------------
+# One good pin plus two malformed ones (a non-object, and an object with no
+# pinned ids). The journal itself is honest and complete, so the ONLY
+# failures are the pins -- --fix must remove exactly the bad entries and
+# leave the good pin untouched.
+V9="$(mkvault malformedpin)"
+W9="$V9/saves"; mkdir -p "$W9"
+printf 'SAVE-P' > "$W9/game.srm"
+SHA_P="$(mkblob "$V9" 'SAVE-P')"
+write_config "$V9" "$(python3 - "$(iso_now)" <<'PY'
+import json,sys
+when=sys.argv[1]
+print(json.dumps({"version":1,"created":when,"watchPaths":[],"syncVaultId":"vault-9",
+  "remotePins":{"usb|vault-9":{"fingerprint":"abc","ids":["c1"],"when":when},
+                "bad|vault-9":"not-an-object",
+                "noids|vault-9":{"fingerprint":"abc","when":when}}}))
+PY
+)"
+F9="$(python3 - "$W9" "$SHA_P" <<'PY'
+import json,sys
+w=sys.argv[1]
+print(json.dumps([{"key":w+"::game.srm","rel":"game.srm","sha256":sys.argv[2],"bytes":6}]))
+PY
+)"
+TS9="$(iso_now)"
+ID9="$(mint_id "" "$TS9" "first" "$F9")"
+commit_entry "$ID9" "" "$TS9" "first" "$F9" > "$V9/.chains/journal.jsonl"
+
+# --- fixture 10: orphan snapshot (auto-repairable by --fix) --------------------
+# Healthy vault with an extra unreferenced blob on disk. --fix must MOVE it
+# into the repair backup (recoverable) rather than delete it.
+V10="$(mkvault orphansnap)"
+W10="$V10/saves"; mkdir -p "$W10"
+printf 'SAVE-Q' > "$W10/game.srm"
+SHA_Q="$(mkblob "$V10" 'SAVE-Q')"
+write_config "$V10" '{"version":1,"created":"2026-09-01T00:00:00+00:00","watchPaths":[]}'
+F10="$(python3 - "$W10" "$SHA_Q" <<'PY'
+import json,sys
+w=sys.argv[1]
+print(json.dumps([{"key":w+"::game.srm","rel":"game.srm","sha256":sys.argv[2],"bytes":6}]))
+PY
+)"
+TS10="$(iso_now)"
+ID10="$(mint_id "" "$TS10" "first" "$F10")"
+commit_entry "$ID10" "" "$TS10" "first" "$F10" > "$V10/.chains/journal.jsonl"
+printf 'ORPHAN-BYTES' > "$V10/.chains/snapshots/orphan0123456789"
+
 # --- run the doctor ------------------------------------------------------------
 echo ""
 echo "  chains doctor regression tests"
@@ -303,13 +354,84 @@ assert_exit 2 "$CODE" "journal tampering"
 assert_contains "$OUT" "fails the integrity check" "tamper reported"
 assert_contains "$OUT" "id re-derivation mismatch" "tamper detail reported"
 
-# --fix must stay report-only: no writes, same health verdict
-BEFORE_FIX="$(snapshot_fixture "$V1")"
+run_doctor "$V9"
+assert_exit 2 "$CODE" "malformed pins"
+assert_contains "$OUT" "pin 'bad|vault-9' is malformed" "non-object pin reported"
+assert_contains "$OUT" "pin 'noids|vault-9' has no pinned commit ids" "no-ids pin reported"
+
+run_doctor "$V10"
+assert_exit 1 "$CODE" "orphan snapshot"
+assert_contains "$OUT" "orphan snapshot" "orphan reported"
+assert_contains "$OUT" "orphan0123456789" "orphan named"
+
+# --- --fix: safe, reversible auto-repairs --------------------------------------
+# Default runs stay read-only (asserted above for every fixture). --fix is
+# the one write path: it repairs malformed pins + orphan snapshots, takes a
+# pre-repair backup first, and writes nothing when nothing is repairable.
+
+# --fix on the healthy vault: nothing to repair -> no backup, no writes.
 OUT_FIX="$("$DOCTOR" --fix "$V1" 2>&1)"; CODE_FIX=$?
-AFTER_FIX="$(snapshot_fixture "$V1")"
 assert_exit 0 "$CODE_FIX" "--fix on healthy vault"
-assert_contains "$OUT_FIX" "report-only" "--fix is report-only"
-if [ "$BEFORE_FIX" = "$AFTER_FIX" ]; then pass "--fix performs no writes"; else fail "--fix modified files"; fi
+assert_contains "$OUT_FIX" "no auto-repairable issues found" "--fix finds nothing to repair"
+if [ -d "$V1/.chains/repair-backups" ]; then fail "--fix on healthy vault creates no backup dir"; else pass "--fix on healthy vault creates no backup dir"; fi
+
+# --fix on the tampered vault: tamper is NOT auto-repairable -> no writes.
+BEFORE_T="$(snapshot_fixture "$V8")"
+OUT_FIX_T="$("$DOCTOR" --fix "$V8" 2>&1)"; CODE_FIX_T=$?
+AFTER_T="$(snapshot_fixture "$V8")"
+assert_exit 2 "$CODE_FIX_T" "--fix on tampered vault keeps the error verdict"
+assert_contains "$OUT_FIX_T" "no auto-repairable issues found" "--fix does not repair tampering"
+if [ "$BEFORE_T" = "$AFTER_T" ] && [ ! -d "$V8/.chains/repair-backups" ]; then
+    pass "--fix writes nothing on unrepairable vault"
+else
+    fail "--fix writes nothing on unrepairable vault"
+fi
+
+# --fix on the malformed-pins vault: bad pins removed, good pin kept.
+OUT_FIX_P="$("$DOCTOR" --fix "$V9" 2>&1)"; CODE_FIX_P=$?
+assert_exit 2 "$CODE_FIX_P" "--fix exit still reflects the pre-repair scan"
+assert_contains "$OUT_FIX_P" "removed malformed remote pin 'bad|vault-9'" "--fix removes non-object pin"
+assert_contains "$OUT_FIX_P" "removed malformed remote pin 'noids|vault-9'" "--fix removes no-ids pin"
+assert_contains "$OUT_FIX_P" "repair backup:" "--fix reports the backup location"
+BACKUP_P="$(find "$V9/.chains/repair-backups" -mindepth 1 -maxdepth 1 -type d | head -1)"
+if [ -n "$BACKUP_P" ]; then pass "--fix created a timestamped repair backup"; else fail "--fix created a timestamped repair backup"; fi
+# the backup is a true pre-repair snapshot: the original config still has the bad pins
+if [ -n "$BACKUP_P" ] && grep -q 'bad|vault-9' "$BACKUP_P/config.json" && grep -q 'noids|vault-9' "$BACKUP_P/config.json"; then
+    pass "backup holds the pre-repair config.json (reversible)"
+else
+    fail "backup holds the pre-repair config.json (reversible)"
+fi
+if [ -n "$BACKUP_P" ] && [ -f "$BACKUP_P/repairs.json" ] && grep -q '"kind": "pin"' "$BACKUP_P/repairs.json"; then
+    pass "backup holds a repairs.json manifest"
+else
+    fail "backup holds a repairs.json manifest"
+fi
+# live config: good pin survives, bad pins gone, config still parses
+PINS_LEFT="$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1]))["remotePins"])))' "$V9/.chains/config.json" 2>&1)"
+if [ "$PINS_LEFT" = "usb|vault-9" ]; then pass "--fix kept only the good pin"; else fail "--fix kept only the good pin (got: $PINS_LEFT)"; fi
+# re-run: the pin findings are gone, vault is clean
+OUT_RERUN="$("$DOCTOR" "$V9" 2>&1)"; CODE_RERUN=$?
+assert_exit 0 "$CODE_RERUN" "re-run after --fix is healthy"
+assert_contains "$OUT_RERUN" "vault is healthy" "re-run confirms health"
+
+# --fix on the orphan-snapshot vault: orphan moved into the backup, never deleted.
+OUT_FIX_O="$("$DOCTOR" --fix "$V10" 2>&1)"; CODE_FIX_O=$?
+assert_contains "$OUT_FIX_O" "moved orphan snapshot orphan0123456789 into the repair backup" "--fix moves the orphan"
+BACKUP_O="$(find "$V10/.chains/repair-backups" -mindepth 1 -maxdepth 1 -type d | head -1)"
+if [ -n "$BACKUP_O" ] && [ ! -f "$V10/.chains/snapshots/orphan0123456789" ] && \
+   [ "$(cat "$BACKUP_O/orphans/orphan0123456789" 2>/dev/null)" = "ORPHAN-BYTES" ]; then
+    pass "--fix moved the orphan (recoverable, not deleted)"
+else
+    fail "--fix moved the orphan (recoverable, not deleted)"
+fi
+# committed blobs are untouched; re-run no longer warns about the orphan
+if [ -f "$V10/.chains/snapshots/$SHA_Q" ]; then pass "--fix left committed blobs in place"; else fail "--fix left committed blobs in place"; fi
+OUT_RERUN_O="$("$DOCTOR" "$V10" 2>&1)"
+if printf '%s' "$OUT_RERUN_O" | grep -q "orphan snapshot"; then
+    fail "re-run no longer warns about the orphan"
+else
+    pass "re-run no longer warns about the orphan"
+fi
 
 # doctor must refuse a non-vault
 OUT_BAD="$("$DOCTOR" "$FIX" 2>&1)"; CODE_BAD=$?
