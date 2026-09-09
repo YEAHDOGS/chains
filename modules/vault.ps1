@@ -2,8 +2,8 @@
 # Chains -- "git for save data" engine
 # ==============================================================================
 # Version control for emulator save files (battery saves like SNES .srm,
-# GBA .sav, and PSX memory cards (.mcr), plus save states). Snapshots are
-# content-addressed by SHA256 and
+# GBA .sav, PSX memory cards (.mcr), and DeSmuME NDS (.dsv), plus save
+# states). Snapshots are content-addressed by SHA256 and
 # recorded in an append-only JSON-lines journal -- a tiny git for the files
 # that hold your progress.
 #
@@ -15,7 +15,7 @@
 # Only save data is ever stored here -- never ROMs or firmware.
 # ==============================================================================
 
-$Script:SavePatterns = @("*.srm", "*.sav", "*.state*", "*.mcr")
+$Script:SavePatterns = @("*.srm", "*.sav", "*.state*", "*.mcr", "*.dsv")
 
 function Get-VaultPaths {
     param([Parameter(Mandatory = $true)][string]$VaultRoot)
