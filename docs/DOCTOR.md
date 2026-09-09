@@ -1,0 +1,78 @@
+# chains doctor
+
+`scripts/chains-doctor.sh` is a dependency-free health check for a Chains
+vault. It exists for the moments PowerShell isn't around — a Linux rescue
+boot, a headless Castle box, a quick sanity check before a risky restore.
+It reads, it never writes.
+
+## Usage
+
+```bash
+bash scripts/chains-doctor.sh [vault-root] [--fix]
+```
+
+`vault-root` is the directory containing `.chains/` (default: current
+directory). Exit codes: **0** healthy, **1** warnings only, **2** errors.
+`--fix` is accepted for forward compatibility but is report-only in this
+pass — the doctor has no write code paths at all, so it cannot modify your
+saves even by accident.
+
+Needs only `bash`, `python3` (stdlib), `df`, and `sha256sum`.
+
+## What it checks
+
+| Check | WARN | FAIL |
+|---|---|---|
+| `config.json` parses | missing `version` | missing / invalid JSON |
+| `journal.jsonl` parses | — | missing, unreadable, broken line, entry without id |
+| Commit chain (refs) | first entry has a parent | duplicate id, **dangling parent ref** (a commit pointing at a parent that isn't in the journal) |
+| Snapshot presence | — | journal names a blob with no file under `snapshots/` |
+| Blob byte-identity | — | blob's SHA256 doesn't match its filename (corruption) |
+| Orphan snapshots | file on disk referenced by no commit | — |
+| HEAD working-tree presence | a file in the newest commit is gone from its watched source path; watched path itself missing | — |
+| Remote fingerprint pins | vault synced before but no pins recorded; pin missing fingerprint/timestamp | `remotePins` not an object; pin entry malformed |
+| Last-sync staleness | newest pin older than 7 days | — |
+| Disk space | under 1 GiB free on the vault's filesystem (`CHAINS_DOCTOR_MIN_FREE_MB` overrides) | — |
+
+A vault that has never synced reports an informational note — first sync
+will TOFU-pin the remote, per `SYNC.md`.
+
+## Repair guide (manual -- the doctor won't do these for you)
+
+- **Dangling parent ref / broken journal line.** The journal is append-only
+  and tamper-evident; a dangling parent means it was hand-edited or
+  truncated. Restore `journal.jsonl` from your last known-good copy (or
+  fetch the journal from a remote you trust -- its pin will tell you if the
+  remote itself was rolled back), then re-run the doctor.
+- **Missing snapshot blob.** The history references bytes that are gone
+  locally. `fetch` the vault from a remote that has them; the engine
+  re-hashes every blob against the journal before accepting it. If no
+  remote has them, that commit's files are unrecoverable -- the rest of the
+  history is still intact.
+- **Blob hash mismatch.** Corruption on disk. Same remedy as a missing
+  blob: fetch a good copy from a pinned remote.
+- **Malformed pin.** Delete the offending pin entry (or the whole
+  `remotePins` object) from `.chains/config.json` and push again -- first
+  contact is trusted and a fresh pin is recorded. See `SYNC.md`
+  ("Re-trusting a remote"); treat it like deleting an SSH known-hosts line.
+- **No pins after syncing.** The engine writes pins on the push/fetch
+  success path; if they're absent, the sync may never have completed.
+  Push/fetch again and re-run the doctor.
+- **Stale sync.** Not an error by itself -- just run `push`/`fetch`.
+- **Orphan snapshots.** Unreferenced blobs. Harmless; delete them by hand
+  only if you need the space (they can never be resurrected into history).
+- **HEAD files missing from the working tree.** The emulator deleted or
+  moved them. Re-save in-game, or `restore` the commit to put the bytes
+  back -- the doctor only reports; `chains.ps1 restore` does the writing.
+
+## Regression tests
+
+`tests/test-doctor.sh` builds five fixture vaults (healthy, dangling
+parent, missing pins, stale sync, broken journal line) in a temp dir, runs
+the doctor against each, and asserts exit codes, report markers, and the
+read-only contract (a hash of every fixture file must be identical before
+and after the run, including under `--fix`). Run it from the repo root:
+
+```bash
+bash tests/test-doctor.sh
+```
