@@ -419,3 +419,225 @@ function Test-SaveChain {
     Write-Host "  [OK] Chain intact: $($Journal.Count) commit(s), all blobs verified.$Note" -ForegroundColor Green
     return $true
 }
+
+# ==============================================================================
+# Sync -- push/fetch chains through a remote store
+# ==============================================================================
+# The sync contract is documented in SYNC.md. The engine implements the
+# LOCAL FILESYSTEM backend only: a directory on disk (USB stick, Castle LAN
+# share, mounted cloud drive). No network code lives here -- default-deny:
+# the engine never phones home, never touches a third-party host.
+#
+# Remote layout (<remote>/vaults/<vault-id>/):
+#   journal.jsonl      union of all known commits for the vault
+#   blobs/<sha256>     content-addressed blobs, deduped by hash
+# ==============================================================================
+
+function Get-ChainsVaultId {
+    <#
+    .SYNOPSIS
+        Stable identity for this vault inside the sync namespace. A GUID
+        minted at init, backfilled for vaults created before sync existed.
+    #>
+    param([Parameter(Mandatory = $true)][hashtable]$Paths)
+    $Config = Read-VaultConfig -Paths $Paths
+    if (-not $Config) { return $null }
+    if (-not $Config.id) {
+        $Config | Add-Member -NotePropertyName "id" -NotePropertyValue ([Guid]::NewGuid().ToString("N"))
+        Write-VaultConfig -Paths $Paths -Config $Config
+    }
+    return $Config.id
+}
+
+function Resolve-SyncVaultId {
+    <#
+    .SYNOPSIS
+        Which remote vault id to talk to. An explicit -VaultId wins and is
+        remembered in the config (so the next bare `fetch` just works);
+        otherwise the last-remembered id, else this vault's own id.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Paths,
+        [string]$VaultId = ""
+    )
+    $Config = Read-VaultConfig -Paths $Paths
+    if (-not $Config) { return $null }
+    if ($VaultId) {
+        $Config | Add-Member -NotePropertyName "syncVaultId" -NotePropertyValue $VaultId -Force
+        Write-VaultConfig -Paths $Paths -Config $Config
+        return $VaultId
+    }
+    if ($Config.syncVaultId) { return $Config.syncVaultId }
+    return (Get-ChainsVaultId -Paths $Paths)
+}
+
+function Read-JournalFile {
+    param([Parameter(Mandatory = $true)][string]$JournalPath)
+    $Entries = @()
+    foreach ($Line in (Get-Content $JournalPath -ErrorAction SilentlyContinue)) {
+        if ([string]::IsNullOrWhiteSpace($Line)) { continue }
+        $Entries += ($Line | ConvertFrom-Json)
+    }
+    return $Entries
+}
+
+function Merge-JournalFile {
+    <#
+    .SYNOPSIS
+        Unions $Entries into the journal at $JournalPath, keyed by commit id.
+        Existing order is preserved; new entries are appended in timestamp
+        order (so verify's parent-before-child walk stays valid). The same id
+        with different bytes is corruption, not a conflict -- ids are
+        content-derived, so this is impossible without tampering. Returns the
+        number of entries added, or $null on corruption.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$JournalPath,
+        [array]$Entries = @()
+    )
+    $Known = @{}
+    foreach ($e in (Read-JournalFile -JournalPath $JournalPath)) { $Known[$e.id] = $e }
+    $NewOnes = @()
+    foreach ($e in $Entries) {
+        if ($Known.ContainsKey($e.id)) {
+            $LocalJson = ($Known[$e.id] | ConvertTo-Json -Depth 5 -Compress)
+            $RemoteJson = ($e | ConvertTo-Json -Depth 5 -Compress)
+            if ($LocalJson -ne $RemoteJson) {
+                Write-Host "  [FAIL] Commit $($e.id) collides with different content -- possible tampering. Sync aborted." -ForegroundColor Red
+                return $null
+            }
+            continue
+        }
+        $Known[$e.id] = $e
+        $NewOnes += $e
+    }
+    foreach ($e in ($NewOnes | Sort-Object { $_.ts }, { $_.id })) {
+        ($_ | ConvertTo-Json -Depth 5 -Compress) | Add-Content $JournalPath
+    }
+    return $NewOnes.Count
+}
+
+function Get-SyncRemoteVaultPaths {
+    param(
+        [Parameter(Mandatory = $true)][string]$RemoteRoot,
+        [Parameter(Mandatory = $true)][string]$VaultId
+    )
+    $VaultDir = Join-Path (Join-Path $RemoteRoot "vaults") $VaultId
+    return @{
+        VaultDir = $VaultDir
+        Journal  = Join-Path $VaultDir "journal.jsonl"
+        Blobs    = Join-Path $VaultDir "blobs"
+    }
+}
+
+function Push-Chains {
+    <#
+    .SYNOPSIS
+        Uploads this vault's journal + blobs to a local filesystem remote.
+        Idempotent: re-pushing transfers only what's missing. Returns a
+        summary object, or $null on failure.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Paths,
+        [Parameter(Mandatory = $true)][string]$RemoteRoot,
+        [string]$VaultId = ""
+    )
+    if (-not (Test-Path $Paths.Dir)) { Write-Host "  [FAIL] Not a Chains. Run 'init' first." -ForegroundColor Red; return $null }
+    $Id = Resolve-SyncVaultId -Paths $Paths -VaultId $VaultId
+    if (-not $Id) { Write-Host "  [FAIL] Not a Chains. Run 'init' first." -ForegroundColor Red; return $null }
+    $R = Get-SyncRemoteVaultPaths -RemoteRoot $RemoteRoot -VaultId $Id
+    New-Item -ItemType Directory -Path $R.Blobs -Force | Out-Null
+    if (-not (Test-Path $R.Journal)) { "" | Set-Content $R.Journal -Force -NoNewline }
+
+    $LocalEntries = @(Get-SaveJournal -Paths $Paths)
+    $Added = Merge-JournalFile -JournalPath $R.Journal -Entries $LocalEntries
+    if ($null -eq $Added) { return $null }
+
+    # Upload blobs the remote is missing. Blob names are content hashes, so
+    # a name collision is an integrity violation, never a silent overwrite.
+    $Pushed = 0
+    foreach ($c in $LocalEntries) {
+        foreach ($f in @($c.files)) {
+            $Dest = Join-Path $R.Blobs $f.sha256
+            if (-not (Test-Path $Dest)) {
+                $Src = Join-Path $Paths.Snapshots $f.sha256
+                if (-not (Test-Path $Src)) {
+                    Write-Host "  [FAIL] Local blob missing for $($f.rel) -- run 'verify'." -ForegroundColor Red
+                    return $null
+                }
+                Copy-Item $Src $Dest -Force
+                $Pushed++
+            }
+        }
+    }
+    Write-Host "  [OK] Pushed to ${RemoteRoot}: $($LocalEntries.Count) commit(s), $Pushed new blob(s)." -ForegroundColor Green
+    return [pscustomobject]@{ VaultId = $Id; EntriesAdded = $Added; BlobsPushed = $Pushed }
+}
+
+function Fetch-Chains {
+    <#
+    .SYNOPSIS
+        Downloads the remote journal + missing blobs into this vault. Blobs
+        are staged to a temp dir and SHA256-checked against the journal
+        BEFORE the local journal is extended, so a tampered remote can never
+        leave the vault pointing at bad bytes. Merge is id-keyed, so both
+        histories survive. Returns a summary object, or $null on failure.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Paths,
+        [Parameter(Mandatory = $true)][string]$RemoteRoot,
+        [string]$VaultId = ""
+    )
+    if (-not (Test-Path $Paths.Dir)) { Write-Host "  [FAIL] Not a Chains. Run 'init' first." -ForegroundColor Red; return $null }
+    $Id = Resolve-SyncVaultId -Paths $Paths -VaultId $VaultId
+    if (-not $Id) { Write-Host "  [FAIL] Not a Chains. Run 'init' first." -ForegroundColor Red; return $null }
+    $R = Get-SyncRemoteVaultPaths -RemoteRoot $RemoteRoot -VaultId $Id
+    if (-not (Test-Path $R.Journal)) {
+        Write-Host "  [i] Remote has no data for this vault yet -- push first." -ForegroundColor DarkGray
+        return [pscustomobject]@{ VaultId = $Id; EntriesAdded = 0; BlobsFetched = 0 }
+    }
+    $RemoteEntries = @(Read-JournalFile -JournalPath $R.Journal)
+
+    # Stage + hash-check every blob we don't have yet, before touching the journal.
+    $KnownIds = @{}
+    foreach ($e in (Get-SaveJournal -Paths $Paths)) { $KnownIds[$e.id] = $true }
+    $Stage = Join-Path ([IO.Path]::GetTempPath()) ("chains-stage-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $Stage -Force | Out-Null
+    $Staged = 0
+    try {
+        foreach ($c in $RemoteEntries) {
+            if ($KnownIds.ContainsKey($c.id)) { continue }
+            foreach ($f in @($c.files)) {
+                $Local = Join-Path $Paths.Snapshots $f.sha256
+                if (Test-Path $Local) { continue }
+                $Src = Join-Path $R.Blobs $f.sha256
+                if (-not (Test-Path $Src)) {
+                    Write-Host "  [FAIL] Remote blob missing for $($f.rel) -- remote is corrupt." -ForegroundColor Red
+                    return $null
+                }
+                $Tmp = Join-Path $Stage $f.sha256
+                Copy-Item $Src $Tmp -Force
+                $Actual = (Get-FileHash -Path $Tmp -Algorithm SHA256).Hash.ToLower()
+                if ($Actual -ne $f.sha256) {
+                    Write-Host "  [FAIL] Remote blob for $($f.rel) failed its hash check -- remote tampered." -ForegroundColor Red
+                    return $null
+                }
+                $Staged++
+            }
+        }
+    }
+    finally {
+        # Move verified blobs into the snapshot store, then drop the stage.
+        if ($Staged -gt 0) {
+            foreach ($b in (Get-ChildItem -Path $Stage -File -ErrorAction SilentlyContinue)) {
+                Move-Item $b.FullName (Join-Path $Paths.Snapshots $b.Name) -Force
+            }
+        }
+        Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
+    }
+
+    $Added = Merge-JournalFile -JournalPath $Paths.Journal -Entries $RemoteEntries
+    if ($null -eq $Added) { return $null }
+    Write-Host "  [OK] Fetched from ${RemoteRoot}: $Added new commit(s), $Staged new blob(s)." -ForegroundColor Green
+    return [pscustomobject]@{ VaultId = $Id; EntriesAdded = $Added; BlobsFetched = $Staged }
+}
