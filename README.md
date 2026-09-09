@@ -59,7 +59,7 @@ A vault is any directory containing `.chains/`:
 The sync story is specified in [SYNC.md](SYNC.md). Short version:
 
 1. **LAN vault (now):** the vault directory can live on a Castle network share, so every machine on the LAN sees the same history.
-2. **Local remote sync (now):** `.\chains.ps1 push -Remote <dir>` / `.\chains.ps1 fetch -Remote <dir>` move journal + blobs through any directory (USB stick, LAN share, mounted cloud drive). Offline-first, no network code in the engine — default-deny.
+2. **Local remote sync (now):** `.\chains.ps1 push -Remote <dir>` / `.\chains.ps1 fetch -Remote <dir>` move journal + blobs through any directory (USB stick, LAN share, mounted cloud drive). Offline-first, no network code in the engine — default-deny. Preview what a sync would do first with `bash scripts/chains-sync-plan.sh <vault> <remote>` — read-only, shows the exact commits and blobs that would transfer plus the pin verdict.
 3. **Network sync (next):** journal + content-addressed blobs map 1:1 onto a sync server: `PUT /sync/upload/chains/<vault-id>/<sha256>`, journal as the manifest. Blobs dedupe globally by hash.
 4. **Offsite tier (future):** encrypted offsite replication of the vault directory — your saves survive a house fire.
 

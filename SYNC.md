@@ -105,3 +105,24 @@ home, report telemetry, or touch anything outside its vault-id namespace.
 .\chains.ps1 push -Remote "E:\chains-remote"     # upload to a USB stick / LAN share
 .\chains.ps1 fetch -Remote "\\CASTLE\chains"     # pull down on another machine
 ```
+
+### Preview a sync before running it
+
+```bash
+bash scripts/chains-sync-plan.sh <vault-root> <remote-root> [--direction push|fetch|both] [--json]
+```
+
+The plan is the read-only twin of the doctor: it computes exactly what a
+`push`/`fetch` would do — which commit ids would be added each way, which
+blobs would transfer and how many bytes — **without writing anything** to the
+vault or the remote, and with zero network code (the local-filesystem remote
+is the only backend it previews). It also verdicts the same preconditions a
+real sync enforces: the TOFU pin check (a rolled-back remote fails the pin
+and aborts), same-id-different-bytes collisions (tampering), blobs the
+journal names but a side is missing, and an unparseable journal on either
+side. Exit codes match the doctor's contract: 0 the plan is clean (sync
+would succeed), 1 warnings only (e.g. the remote has no data for this vault
+yet — push first), 2 a real sync would abort. `--json` emits a bare plan
+document for scripts and CI. Regression suite: `bash tests/test-sync-plan.sh`
+(31 assertions; asserts the plan never writes by hashing every fixture file
+before and after each run).
