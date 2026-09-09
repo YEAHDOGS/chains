@@ -32,9 +32,10 @@ Battery saves and save states — the files that hold *your progress*:
 | GBA | `.sav` | mGBA, VBA-M, RetroArch (mGBA/VBA cores) |
 | PSX | `.mcr` | DuckStation, ePSXe, RetroArch (Beetle PSX core) |
 | NDS | `.dsv` | DeSmuME |
+| Any (BizHawk) | `.SaveRAM` | BizHawk (multi-system SaveRAM dumps) |
 | Any | `.state*` | save states (emulator-specific, less portable) |
 
-Tracked patterns: `*.srm`, `*.sav`, `*.state*`, `*.mcr`, `*.dsv`. Only save data is ever stored — **never ROMs or firmware** (those live in the separate `arcade/` project).
+Tracked patterns: `*.srm`, `*.sav`, `*.state*`, `*.mcr`, `*.dsv`, `*.SaveRAM`. Only save data is ever stored — **never ROMs or firmware** (those live in the separate `arcade/` project).
 
 > Save states are emulator-version-sensitive; battery saves (`.srm`/`.sav`) are the portable, future-proof format. When in doubt, save in-game, not just save-state.
 
@@ -78,9 +79,8 @@ Conflict policy: commits are content-addressed and the journal is append-only, s
 - `push`/`pull` against a network sync server (local-filesystem remote ships now — see SYNC.md).
 - Scheduled auto-commit (e.g. commit on emulator exit / every 30 min).
 - GUI client.
-- More systems: GBC/GB, NDS (`.dsv` tracked for DeSmuME; melonDS
-  battery saves use `.sav`, already tracked), BizHawk `.SaveRAM` (proposed
-  pattern, see docs/SAVE-FORMATS.md).
+- More systems: GBC/GB (`.sav`, already tracked — melonDS NDS battery
+  saves use `.sav` too, also tracked).
 
 ## Tests
 
