@@ -57,7 +57,7 @@ Needs only `bash`, `python3` (stdlib), `df`, and `sha256sum`.
 | Snapshot presence | — | journal names a blob with no file under `snapshots/` |
 | Blob byte-identity | — | blob's SHA256 doesn't match its filename (corruption) |
 | Orphan snapshots | file on disk referenced by no commit | — |
-| HEAD working-tree presence | a file in the newest commit is gone from its watched source path; watched path itself missing | — |
+| HEAD working-tree drift | a file in the newest commit is gone from its watched source path; a file's bytes no longer match the committed blob (**uncommitted changes** -- progress since the last commit); watched path itself missing | — |
 | Remote fingerprint pins | vault synced before but no pins recorded; pin missing fingerprint/timestamp | `remotePins` not an object; pin entry malformed |
 | Last-sync staleness | newest pin older than 7 days | — |
 | Disk space | under 1 GiB free on the vault's filesystem (`CHAINS_DOCTOR_MIN_FREE_MB` overrides) | — |
@@ -89,21 +89,25 @@ will TOFU-pin the remote, per `SYNC.md`.
 - **Stale sync.** Not an error by itself -- just run `push`/`fetch`.
 - **Orphan snapshots.** Unreferenced blobs. Harmless; delete them by hand
   only if you need the space (they can never be resurrected into history).
+- **Uncommitted changes (working-tree drift).** The emulator wrote to a
+  save after your last commit. `commit` the current state to capture the
+  progress -- or `restore` the commit to throw the new bytes away (the
+  pre-restore auto-backup keeps them recoverable).
 - **HEAD files missing from the working tree.** The emulator deleted or
   moved them. Re-save in-game, or `restore` the commit to put the bytes
   back -- the doctor only reports; `chains.ps1 restore` does the writing.
 
 ## Regression tests
 
-`tests/test-doctor.sh` builds five fixture vaults (healthy, dangling
-parent, missing pins, stale sync, broken journal line) in a temp dir, runs
-the doctor against each, and asserts exit codes, report markers, and the
-read-only contract (a hash of every fixture file must be identical before
-and after the run, including under `--fix`). It also runs the doctor with
-`--json` against the healthy, dangling-parent, and stale-sync fixtures and
-asserts the JSON document parses, carries the same exit/result verdicts,
-has a valid findings schema, and emits no human-format lines. Run it from
-the repo root:
+`tests/test-doctor.sh` builds six fixture vaults (healthy, dangling
+parent, missing pins, stale sync, broken journal line, working-tree
+drift) in a temp dir, runs the doctor against each, and asserts exit
+codes, report markers, and the read-only contract (a hash of every fixture
+file must be identical before and after the run, including under `--fix`).
+It also runs the doctor with `--json` against the healthy, dangling-parent,
+stale-sync, and drift fixtures and asserts the JSON document parses,
+carries the same exit/result verdicts, has a valid findings schema, and
+emits no human-format lines. Run it from the repo root:
 
 ```bash
 bash tests/test-doctor.sh

@@ -2,13 +2,13 @@
 # =============================================================================
 # Regression tests for chains doctor (scripts/chains-doctor.sh).
 #
-# Builds five fixture vaults in a temp dir -- healthy, dangling parent ref,
-# missing pins, stale sync, broken journal -- plus a --json pass over the
-# healthy/dangling/stale fixtures, runs the doctor against each, and asserts
-# the exit code (0 healthy / 1 warnings / 2 errors), the machine-readable
-# report schema, plus key output markers. Also asserts the doctor is
-# read-only: a hash of every file in the fixture vault must be identical
-# before and after the run.
+# Builds six fixture vaults in a temp dir -- healthy, dangling parent ref,
+# missing pins, stale sync, broken journal, working-tree drift -- plus a
+# --json pass over the healthy/dangling/stale/drift fixtures, runs the
+# doctor against each, and asserts the exit code (0 healthy / 1 warnings /
+# 2 errors), the machine-readable report schema, plus key output markers.
+# Also asserts the doctor is read-only: a hash of every file in the fixture
+# vault must be identical before and after the run.
 #
 # Needs: bash, python3 (stdlib only), sha256sum. No network, no installs.
 # Run from the repo root:  bash tests/test-doctor.sh
@@ -144,6 +144,32 @@ V5="$(mkvault broken)"
 write_config "$V5" '{"version":1,"created":"2026-09-01T00:00:00+00:00","watchPaths":[]}'
 { echo '{"id":"a1b2c3d4e5f6","parent":"","files":[]}'; echo 'this is not json{'; } > "$V5/.chains/journal.jsonl"
 
+# --- fixture 6: working-tree drift (played but uncommitted) ------------------
+V6="$(mkvault drift)"
+W6="$V6/saves"; mkdir -p "$W6"
+printf 'SAVE-F' > "$W6/game.srm"
+printf 'SAVE-G' > "$W6/game.sav"
+SHA_F="$(mkblob "$V6" 'SAVE-F')"
+SHA_G="$(mkblob "$V6" 'SAVE-G')"
+write_config "$V6" "$(python3 - "$W6" "$(iso_now)" <<'PY'
+import json,sys
+print(json.dumps({"version":1,"created":sys.argv[2],"watchPaths":[sys.argv[1]],
+  "remotePins":{"usb|vault-6":{"fingerprint":"abc","ids":["c1","c2"],"when":sys.argv[2]}}}))
+PY
+)"
+FILES6="$(python3 - "$W6" "$SHA_F" "$SHA_G" <<'PY'
+import json,sys
+w=sys.argv[1]
+print(json.dumps([
+  {"key":w+"::game.srm","rel":"game.srm","sha256":sys.argv[2],"bytes":6},
+  {"key":w+"::game.sav","rel":"game.sav","sha256":sys.argv[3],"bytes":6}]))
+PY
+)"
+commit_entry "a1b2c3d4e5f6" "" "$(iso_now)" "first" "$FILES6" > "$V6/.chains/journal.jsonl"
+commit_entry "b2c3d4e5f6a7" "a1b2c3d4e5f6" "$(iso_now)" "second" "$FILES6" >> "$V6/.chains/journal.jsonl"
+# ...then the player keeps playing: the live .srm no longer matches HEAD.
+printf 'SAVE-F-PLAYED-ON' > "$W6/game.srm"
+
 # --- run the doctor ------------------------------------------------------------
 echo ""
 echo "  chains doctor regression tests"
@@ -182,6 +208,11 @@ assert_contains "$OUT" "older than" "stale sync reported"
 run_doctor "$V5"
 assert_exit 2 "$CODE" "broken journal line"
 assert_contains "$OUT" "not valid JSON" "broken journal reported"
+
+run_doctor "$V6"
+assert_exit 1 "$CODE" "working-tree drift"
+assert_contains "$OUT" "uncommitted changes" "drift reported"
+assert_contains "$OUT" "game.srm" "drifted file named"
 
 # --fix must stay report-only: no writes, same health verdict
 BEFORE_FIX="$(snapshot_fixture "$V1")"
@@ -260,6 +291,19 @@ fi
 run_doctor_json "$V4"
 assert_exit 1 "$JCODE" "--json on warning vault"
 [ "$(json_field "$JOUT" 'd["result"]')" = "warnings" ] && pass "--json result=warnings" || fail "--json result=warnings"
+
+run_doctor_json "$V6"
+assert_exit 1 "$JCODE" "--json on drift vault"
+[ "$(json_field "$JOUT" 'd["result"]')" = "warnings" ] && pass "--json drift result=warnings" || fail "--json drift result=warnings"
+if printf '%s' "$JOUT" | python3 -c '
+import json,sys
+d=json.loads(sys.stdin.read())
+warns=[f for f in d["findings"] if f["severity"]=="warn" and "uncommitted changes" in f["message"]]
+assert warns, "no drift finding in --json"'; then
+    pass "--json carries the drift finding"
+else
+    fail "--json carries the drift finding"
+fi
 
 echo ""
 echo "  $PASS passed, $FAIL failed."

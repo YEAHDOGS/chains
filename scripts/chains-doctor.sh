@@ -9,8 +9,10 @@
 #   - snapshot presence: every blob the journal names must exist, and every
 #     blob's bytes must still hash to its own name (read-only re-hash)
 #   - orphan snapshots (present on disk, referenced by no commit)
-#   - HEAD save-file presence: every file in the newest commit should still
-#     exist at its watched source path
+#   - HEAD working-tree drift: every file in the newest commit should still
+#     exist at its watched source path, and the bytes still there are
+#     re-hashed against the committed blob -- a mismatch means played-but-
+#     uncommitted progress (the save changed since the last commit)
 #   - remote fingerprint pin presence (TOFU pins in config.json)
 #   - last-sync staleness from pin timestamps
 #   - disk-space sanity on the vault's filesystem
@@ -362,7 +364,7 @@ if [ -n "$SUMMARY_JSON" ]; then
         fi
     fi
 
-    # --- 7. HEAD save-file presence in the working tree -----------------------
+    # --- 7. HEAD working-tree drift --------------------------------------------
     HEAD_FILES="$(python3 -c '
 import json,sys
 s=json.loads(sys.argv[1])
@@ -370,6 +372,7 @@ for f in s["head_files"]:
     print(f["key"]+"\t"+f["rel"]+"\t"+f["sha256"])' "$SUMMARY_JSON")"
     if [ -n "$HEAD_FILES" ]; then
         MISSING_SRC=0
+        DRIFTED=0
         while IFS=$'\t' read -r key rel sha; do
             [ -z "$key" ] && continue
             # Key is "<watch dir>::<relative path>"; split on the LAST "::".
@@ -377,15 +380,25 @@ for f in s["head_files"]:
             if [ "$watch" = "$key" ]; then
                 continue  # no "::" separator -- can't resolve, skip quietly
             fi
-            if [ ! -e "$watch/$rel" ]; then
-                report warn "HEAD save file missing from working tree: $watch/$rel"
+            src="$watch/$rel"
+            if [ ! -e "$src" ]; then
+                report warn "HEAD save file missing from working tree: $src"
                 MISSING_SRC=$((MISSING_SRC + 1))
+            elif [ -f "$src" ]; then
+                # The file is there -- is it still the bytes HEAD committed?
+                # A mismatch is played-but-uncommitted progress: worth a
+                # warning before those bytes get wiped, corrupted, or lost.
+                LIVE="$(sha256sum "$src" 2>/dev/null | awk '{print $1}')"
+                if [ -n "$LIVE" ] && [ "$LIVE" != "$sha" ]; then
+                    report warn "save file differs from HEAD commit (uncommitted changes): $src"
+                    DRIFTED=$((DRIFTED + 1))
+                fi
             fi
         done <<< "$HEAD_FILES"
-        WARNINGS=$((WARNINGS + MISSING_SRC))
-        if [ "$MISSING_SRC" -eq 0 ]; then
+        WARNINGS=$((WARNINGS + MISSING_SRC + DRIFTED))
+        if [ "$MISSING_SRC" -eq 0 ] && [ "$DRIFTED" -eq 0 ]; then
             HEAD_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["head"])' "$SUMMARY_JSON")"
-            report ok "all HEAD ($HEAD_ID) save files present in working tree"
+            report ok "all HEAD ($HEAD_ID) save files present and unchanged in working tree"
         fi
     fi
 
