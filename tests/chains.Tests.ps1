@@ -203,4 +203,134 @@ Describe "Chains save-data engine" {
         New-SaveCommitId -Timestamp "2026-01-01T00:00:00Z" -Message "other" -FileList $Files |
             Should -Not -Be $Id1   # message is part of the id
     }
+
+    It "pushes a vault to a local remote and fetches it onto a second machine" {
+        $Remote = Join-Path $Script:Tmp "remote"
+        Write-TestSave -Dir $Script:Saves -Name "game.srm" -Bytes (New-TestBytes -Seed 3)
+        $A = New-SaveCommit -Paths $Script:Paths -Message "machine a"
+        $Push = Push-Chains -Paths $Script:Paths -RemoteRoot $Remote
+        $Push | Should -Not -BeNullOrEmpty
+        $Push.BlobsPushed | Should -Be 1
+
+        # "Another machine": a fresh vault with its own id.
+        $VaultB = Join-Path $Script:Tmp "vaultB"
+        $SavesB = Join-Path $Script:Tmp "savesB"
+        New-Item -ItemType Directory -Path $VaultB | Out-Null
+        New-Item -ItemType Directory -Path $SavesB | Out-Null
+        $PathsB = Initialize-Chains -Path $VaultB
+        Add-SaveWatchPath -Paths $PathsB -WatchPath $SavesB | Out-Null
+
+        $Fetch = Fetch-Chains -Paths $PathsB -RemoteRoot $Remote -VaultId $Push.VaultId
+        $Fetch | Should -Not -BeNullOrEmpty
+        $Fetch.EntriesAdded | Should -Be 1
+        $Fetch.BlobsFetched | Should -Be 1
+
+        # The fetched vault carries the same history and verifies clean.
+        @(Get-SaveJournal -Paths $PathsB).Count | Should -Be 1
+        (Find-SaveCommit -Paths $PathsB -Ref $A.id).id | Should -Be $A.id
+        Test-SaveChain -Paths $PathsB | Should -BeTrue
+
+        # Idempotent: a second fetch transfers nothing.
+        $Again = Fetch-Chains -Paths $PathsB -RemoteRoot $Remote
+        $Again.EntriesAdded | Should -Be 0
+        $Again.BlobsFetched | Should -Be 0
+    }
+
+    It "merges divergent histories from two machines without losing commits" {
+        $Remote = Join-Path $Script:Tmp "remote"
+        Write-TestSave -Dir $Script:Saves -Name "a.srm" -Bytes (New-TestBytes -Seed 1)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "from a"
+        $Push = Push-Chains -Paths $Script:Paths -RemoteRoot $Remote
+
+        $VaultB = Join-Path $Script:Tmp "vaultB"
+        $SavesB = Join-Path $Script:Tmp "savesB"
+        New-Item -ItemType Directory -Path $VaultB | Out-Null
+        New-Item -ItemType Directory -Path $SavesB | Out-Null
+        $PathsB = Initialize-Chains -Path $VaultB
+        Add-SaveWatchPath -Paths $PathsB -WatchPath $SavesB | Out-Null
+        $null = Fetch-Chains -Paths $PathsB -RemoteRoot $Remote -VaultId $Push.VaultId
+
+        # Machine B diverges: new save, new commit, push back up.
+        Write-TestSave -Dir $SavesB -Name "b.sav" -Bytes (New-TestBytes -Seed 9)
+        $B = New-SaveCommit -Paths $PathsB -Message "from b"
+        $null = Push-Chains -Paths $PathsB -RemoteRoot $Remote
+
+        # Machine A fetches: both histories present, both verify.
+        $FetchA = Fetch-Chains -Paths $Script:Paths -RemoteRoot $Remote
+        $FetchA.EntriesAdded | Should -Be 1
+        @(Get-SaveJournal -Paths $Script:Paths).Count | Should -Be 2
+        @(Get-SaveJournal -Paths $PathsB).Count | Should -Be 2
+        (Find-SaveCommit -Paths $Script:Paths -Ref $B.id).id | Should -Be $B.id
+        Test-SaveChain -Paths $Script:Paths | Should -BeTrue
+        Test-SaveChain -Paths $PathsB | Should -BeTrue
+    }
+
+    It "rejects a tampered remote blob on fetch" {
+        $Remote = Join-Path $Script:Tmp "remote"
+        Write-TestSave -Dir $Script:Saves -Name "game.srm" -Bytes (New-TestBytes -Seed 5)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "clean"
+        $Push = Push-Chains -Paths $Script:Paths -RemoteRoot $Remote
+
+        # Tamper with the blob on the remote side.
+        $Sha = @((Get-SaveJournal -Paths $Script:Paths)[0].files)[0].sha256
+        $RemoteBlob = [IO.Path]::Combine($Remote, "vaults", $Push.VaultId, "blobs", $Sha)
+        [IO.File]::AppendAllBytes($RemoteBlob, [byte[]]@(0xFF))
+
+        $VaultB = Join-Path $Script:Tmp "vaultB"
+        $SavesB = Join-Path $Script:Tmp "savesB"
+        New-Item -ItemType Directory -Path $VaultB | Out-Null
+        New-Item -ItemType Directory -Path $SavesB | Out-Null
+        $PathsB = Initialize-Chains -Path $VaultB
+        Add-SaveWatchPath -Paths $PathsB -WatchPath $SavesB | Out-Null
+
+        $Fetch = Fetch-Chains -Paths $PathsB -RemoteRoot $Remote -VaultId $Push.VaultId
+        $Fetch | Should -BeNullOrEmpty
+        # The local journal was never extended with the poisoned entry.
+        @(Get-SaveJournal -Paths $PathsB).Count | Should -Be 0
+    }
+
+    It "reports per-commit deltas in the log, newest first" {
+        Write-TestSave -Dir $Script:Saves -Name "game.sav" -Bytes (New-TestBytes -Seed 1)
+        $A = New-SaveCommit -Paths $Script:Paths -Message "v1"
+        Write-TestSave -Dir $Script:Saves -Name "game.sav" -Bytes (New-TestBytes -Seed 2)
+        Write-TestSave -Dir $Script:Saves -Name "extra.srm" -Bytes (New-TestBytes -Seed 3)
+        $B = New-SaveCommit -Paths $Script:Paths -Message "v2"
+
+        $Log = @(Get-SaveLog -Paths $Script:Paths)
+        $Log.Count | Should -Be 2
+        $Log[0].Id | Should -Be $B.id
+        $Log[0].Added | Should -Be 1
+        $Log[0].Modified | Should -Be 1
+        $Log[0].Deleted | Should -Be 0
+        $Log[1].Id | Should -Be $A.id
+        $Log[1].Added | Should -Be 1   # root commit: everything counts as added
+        $Log[1].Modified | Should -Be 0
+
+        $Limited = @(Get-SaveLog -Paths $Script:Paths -Count 1)
+        $Limited.Count | Should -Be 1
+        $Limited[0].Id | Should -Be $B.id
+    }
+
+    It "round-trips real-world save sizes byte-identical (.srm 32KB, .sav 64KB)" {
+        # SNES HiROM battery SRAM is 32KB; GBA flash saves are 64KB (512Kbit).
+        # Chains never parses these -- it stores opaque bytes. This locks in
+        # the byte-identity guarantee at realistic sizes.
+        $Srm = [byte[]]::new(32768)
+        for ($i = 0; $i -lt $Srm.Length; $i++) { $Srm[$i] = [byte](($i * 7 + 3) % 256) }
+        [IO.File]::WriteAllBytes((Join-Path $Script:Saves "game.srm"), $Srm)
+        $Sav = [byte[]]::new(65536)
+        for ($i = 0; $i -lt $Sav.Length; $i++) { $Sav[$i] = [byte](($i * 13 + 11) % 256) }
+        [IO.File]::WriteAllBytes((Join-Path $Script:Saves "game.sav"), $Sav)
+
+        $C = New-SaveCommit -Paths $Script:Paths -Message "real sizes"
+        @($C.files).Count | Should -Be 2
+
+        # Scramble the working copies, then restore the commit.
+        [IO.File]::WriteAllBytes((Join-Path $Script:Saves "game.srm"), [byte[]]::new(32768))
+        [IO.File]::WriteAllBytes((Join-Path $Script:Saves "game.sav"), [byte[]]::new(65536))
+        $null = Restore-SaveCommit -Paths $Script:Paths -Ref $C.id -NoBackup
+
+        Get-TestFileBytesHex -File (Join-Path $Script:Saves "game.srm") | Should -Be ([BitConverter]::ToString($Srm))
+        Get-TestFileBytesHex -File (Join-Path $Script:Saves "game.sav") | Should -Be ([BitConverter]::ToString($Sav))
+    }
 }
