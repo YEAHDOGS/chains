@@ -53,6 +53,23 @@ journal *before* the local journal is extended. A tampered or truncated
 remote blob aborts the whole fetch — the local vault is never left with
 journal entries pointing at bad bytes.
 
+### Remote fingerprint pinning (TOFU)
+
+Hash checks and id-keyed merges stop *forgery*, but not *rollback*: a remote
+whose journal was replaced with an older copy (or swapped for a different
+vault's journal) would still "merge" cleanly and silently resurrect history
+you already had. After every successful push/fetch, the vault pins the set of
+commit ids it has seen on that remote root + vault id (`config.json`
+→ `remotePins`). The next sync requires every pinned id to still be present
+on the remote; a missing id aborts the sync before any local state changes.
+
+- First contact has no pin and is trusted, then pinned on success — same
+  trust-on-first-use model as SSH host keys.
+- The pin moves forward only on the success path; a failed sync never moves
+  it, so a poisoned remote can't launder itself through a retry.
+- Pins are per remote root *and* per vault id: one USB stick hosting two
+  vaults, or one vault syncing to USB + LAN share, get independent pins.
+
 ## Conflict policy
 
 Commits are content-addressed and the journal is append-only, so "conflicts"
