@@ -13,8 +13,10 @@
 #
 # Safety order is deliberate and slightly stricter than the PowerShell
 # original: every precondition is verified before the first write, journals
-# are rewritten via temp-file + rename (never a partial append), and the
-# remote pin moves forward ONLY on the success path. Fetched blobs are staged
+# are rewritten via temp-file + rename (never a partial append), push
+# transfers blobs BEFORE rewriting the remote journal (so a failed push
+# can never leave the journal referencing missing blobs), and the remote
+# pin moves forward ONLY on the success path. Fetched blobs are staged
 # to a temp dir and SHA256-checked against the journal BEFORE the local
 # journal is extended, so a tampered remote can never leave the vault
 # pointing at bad bytes. An aborted fetch leaves no staged files behind.
@@ -276,28 +278,41 @@ if direction == "push":
             if sha and not os.path.isfile(os.path.join(snaps_dir, sha)):
                 die("local blob missing for %s -- run verify" % (f.get("rel") or sha))
 
-    new_journal, added = merged_entries(remote_entries, local_entries)
-    write_journal_atomic(rjournal, new_journal)
-
-    pushed = 0
+    # Blobs go to the remote BEFORE its journal is rewritten. A push that
+    # dies mid-transfer (disk full, permissions, crash) therefore leaves the
+    # remote journal describing exactly what is already there -- it can
+    # never reference blobs that never arrived. Transfer errors abort
+    # cleanly (exit 2) instead of propagating as tracebacks.
+    new_ids = {e["id"] for e in local_entries if e["id"] not in remote_by_id}
+    shas = []
     for e in local_entries:
-        if e["id"] in remote_by_id:
+        if e["id"] not in new_ids:
             continue
         for f in (e.get("files") or []):
             sha = f.get("sha256")
-            if not sha:
-                continue
-            dest = os.path.join(rblobs, sha)
-            if os.path.isfile(dest):
-                # A blob name is a content hash: an existing blob with
-                # different bytes is an integrity violation, never skipped
-                # silently.
-                if sha256_file(dest) != sha:
-                    die("remote blob %s exists with different bytes -- remote "
-                        "is corrupt; sync aborted" % sha)
-                continue
+            if sha and sha not in shas:
+                shas.append(sha)
+
+    pushed = 0
+    for sha in shas:
+        dest = os.path.join(rblobs, sha)
+        if os.path.isfile(dest):
+            # A blob name is a content hash: an existing blob with
+            # different bytes is an integrity violation, never skipped
+            # silently.
+            if sha256_file(dest) != sha:
+                die("remote blob %s exists with different bytes -- remote "
+                    "is corrupt; sync aborted" % sha)
+            continue
+        try:
             shutil.copy2(os.path.join(snaps_dir, sha), dest)
-            pushed += 1
+        except OSError as ex:
+            die("could not write blob %s to remote: %s -- remote journal "
+                "left untouched" % (sha, ex))
+        pushed += 1
+
+    new_journal, added = merged_entries(remote_entries, local_entries)
+    write_journal_atomic(rjournal, new_journal)
 
     set_pin(new_journal)  # pin the remote as we just left it -- success only
     ok("pushed to %s: %d new commit(s), %d new blob(s); remote pinned"

@@ -15,6 +15,8 @@
 #   - same-id-different-bytes (corruption) aborts; remote untouched
 #   - a missing local blob aborts a push before the remote journal changes
 #   - a same-named-different-bytes remote blob aborts a push (integrity)
+#   - a push whose blob transfer fails partway leaves the remote journal
+#     untouched (blobs are transferred before the journal is rewritten)
 #   - fetch from an empty remote is a clean no-op (exit 0)
 #   - pin fingerprint matches the engine's format (fingerprint(ids sorted,
 #     newline-joined, sha256); keyed "<remote>|<vault-id>") so the bash and
@@ -284,7 +286,34 @@ assert_exit 2 "$code" "corrupt same-named remote blob aborts push"
 assert_contains "$out" "different bytes" "integrity message"
 printf 'save-bytes-D' > "$R/vaults/vault-aaaa/blobs/$SHA_D"   # restore
 
-# Test 10: fetch from an empty remote is a clean no-op.
+# Test 11: a push whose blob transfer fails partway must NOT leave the
+# remote journal referencing blobs that never arrived (partial-state
+# safety). Blobs are transferred before the remote journal is rewritten,
+# so a failed push aborts with the journal exactly as it was.
+SHA_E="$(mkblob "$VA" 'save-bytes-E')"
+ID5="$(mkentry "$VA/.chains/journal.jsonl" "$ID4" "2026-09-05T10:00:00Z" "new run" "$(mkfiles '/w' "$SHA_E")")"
+SHA_F="$(mkblob "$VA" 'save-bytes-F')"
+ID6="$(mkentry "$VA/.chains/journal.jsonl" "$ID5" "2026-09-06T10:00:00Z" "another run" "$(mkfiles '/w' "$SHA_F")")"
+# Break the remote blob store deterministically (a regular file where the
+# blobs directory should be makes every blob copy fail, even as root --
+# before any bytes can be transferred).
+mv "$R/vaults/vault-aaaa/blobs" "$FIX/blobs-backup"
+printf 'not-a-directory' > "$R/vaults/vault-aaaa/blobs"
+before_remote="$(journal_ids "$R/vaults/vault-aaaa/journal.jsonl")"
+out="$(bash "$SYNC" "$VA" "$R" --direction push 2>&1)"; code=$?
+assert_exit 2 "$code" "push with failed blob transfer aborts cleanly"
+assert_contains "$out" "remote journal left untouched" "partial-push message"
+assert_eq "$before_remote" "$(journal_ids "$R/vaults/vault-aaaa/journal.jsonl")" \
+    "remote journal NOT extended when blob transfer fails"
+# Repair the remote and finish the push for real: 3 new commits (ID4-6);
+# blob D was already on the remote so only E and F are new.
+rm "$R/vaults/vault-aaaa/blobs"
+mv "$FIX/blobs-backup" "$R/vaults/vault-aaaa/blobs"
+out="$(bash "$SYNC" "$VA" "$R" --direction push 2>&1)"; code=$?
+assert_exit 0 "$code" "push succeeds after remote repair"
+assert_contains "$out" "3 new commit(s), 2 new blob(s)" "recovered push transfers what was missing"
+
+# Test 12: fetch from an empty remote is a clean no-op.
 R2="$(mkremote remote2)"
 out="$(bash "$SYNC" "$VA" "$R2" --direction fetch 2>&1)"; code=$?
 assert_exit 0 "$code" "fetch from empty remote is clean"
