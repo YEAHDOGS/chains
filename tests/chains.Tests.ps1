@@ -334,3 +334,142 @@ Describe "Chains save-data engine" {
         Get-TestFileBytesHex -File (Join-Path $Script:Saves "game.sav") | Should -Be ([BitConverter]::ToString($Sav))
     }
 }
+
+Describe "Chains remote fingerprint pinning" {
+    BeforeAll {
+        . (Join-Path $PSScriptRoot ".." "modules" "vault.ps1")
+
+        function New-TestBytes {
+            param([int]$Seed = 0)
+            $b = [byte[]](0..255)
+            for ($i = 0; $i -lt $b.Length; $i++) { $b[$i] = [byte](($i + $Seed) % 256) }
+            return $b
+        }
+
+        function Write-TestSave {
+            param([string]$Dir, [string]$Name, [byte[]]$Bytes)
+            [IO.File]::WriteAllBytes((Join-Path $Dir $Name), $Bytes)
+        }
+
+        function New-SecondVault {
+            param([string]$Tmp)
+            $VaultB = Join-Path $Tmp "vaultB"
+            $SavesB = Join-Path $Tmp "savesB"
+            New-Item -ItemType Directory -Path $VaultB | Out-Null
+            New-Item -ItemType Directory -Path $SavesB | Out-Null
+            $PathsB = Initialize-Chains -Path $VaultB
+            Add-SaveWatchPath -Paths $PathsB -WatchPath $SavesB | Out-Null
+            return $PathsB
+        }
+    }
+
+    BeforeEach {
+        $Script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("chains-pin-" + [Guid]::NewGuid().ToString("N"))
+        $Script:Vault = Join-Path $Script:Tmp "vault"
+        $Script:Saves = Join-Path $Script:Tmp "saves"
+        New-Item -ItemType Directory -Path $Script:Vault | Out-Null
+        New-Item -ItemType Directory -Path $Script:Saves | Out-Null
+        $Script:Paths = Initialize-Chains -Path $Script:Vault
+        Add-SaveWatchPath -Paths $Script:Paths -WatchPath $Script:Saves | Out-Null
+        $Script:Remote = Join-Path $Script:Tmp "remote"
+    }
+
+    AfterEach {
+        Remove-Item -Recurse -Force $Script:Tmp -ErrorAction SilentlyContinue
+    }
+
+    It "pins the remote on first sync and keeps syncing as history grows" {
+        Write-TestSave -Dir $Script:Saves -Name "game.srm" -Bytes (New-TestBytes -Seed 1)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "v1"
+        $Push = Push-Chains -Paths $Script:Paths -RemoteRoot $Script:Remote
+        $Push | Should -Not -BeNullOrEmpty
+
+        $Pins = Get-RemotePins -Paths $Script:Paths
+        $Key = Get-PinKey -RemoteRoot $Script:Remote -VaultId $Push.VaultId
+        $Pins.ContainsKey($Key) | Should -BeTrue
+        $Pins[$Key].fingerprint | Should -Be (Get-JournalFingerprint -Entries @(Get-SaveJournal -Paths $Script:Paths))
+
+        # A second commit pushes fine against the existing pin, and the pin moves forward.
+        Write-TestSave -Dir $Script:Saves -Name "game.srm" -Bytes (New-TestBytes -Seed 2)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "v2"
+        $Push2 = Push-Chains -Paths $Script:Paths -RemoteRoot $Script:Remote
+        $Push2 | Should -Not -BeNullOrEmpty
+        (Get-RemotePins -Paths $Script:Paths)[$Key].fingerprint |
+            Should -Be (Get-JournalFingerprint -Entries @(Get-SaveJournal -Paths $Script:Paths))
+    }
+
+    It "aborts fetch when the remote journal is rolled back (replay)" {
+        Write-TestSave -Dir $Script:Saves -Name "game.srm" -Bytes (New-TestBytes -Seed 1)
+        $A = New-SaveCommit -Paths $Script:Paths -Message "v1"
+        $Push = Push-Chains -Paths $Script:Paths -RemoteRoot $Script:Remote
+
+        $PathsB = New-SecondVault -Tmp $Script:Tmp
+        $null = Fetch-Chains -Paths $PathsB -RemoteRoot $Script:Remote -VaultId $Push.VaultId
+        @(Get-SaveJournal -Paths $PathsB).Count | Should -Be 1
+
+        # Attacker rolls the remote back: empty the journal entirely.
+        $RJ = Join-Path $Script:Remote "vaults" $Push.VaultId "journal.jsonl"
+        "" | Set-Content $RJ -Force -NoNewline
+
+        $Fetch = Fetch-Chains -Paths $PathsB -RemoteRoot $Script:Remote
+        $Fetch | Should -BeNullOrEmpty
+        # Local vault untouched: the pinned commit is still there.
+        @(Get-SaveJournal -Paths $PathsB).Count | Should -Be 1
+        (Find-SaveCommit -Paths $PathsB -Ref $A.id).id | Should -Be $A.id
+    }
+
+    It "aborts push when the remote journal was swapped for another vault's" {
+        Write-TestSave -Dir $Script:Saves -Name "game.srm" -Bytes (New-TestBytes -Seed 1)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "v1"
+        $Push = Push-Chains -Paths $Script:Paths -RemoteRoot $Script:Remote
+
+        # Attacker swaps in a different vault's journal under the same id dir.
+        $PathsC = New-SecondVault -Tmp $Script:Tmp
+        Write-TestSave -Dir (Join-Path $Script:Tmp "savesB") -Name "evil.sav" -Bytes (New-TestBytes -Seed 99)
+        $null = New-SaveCommit -Paths $PathsC -Message "evil history"
+        $RJ = Join-Path $Script:Remote "vaults" $Push.VaultId "journal.jsonl"
+        Get-Content (Join-Path $PathsC.Root ".chains" "journal.jsonl") | Set-Content $RJ -Force
+
+        $Again = Push-Chains -Paths $Script:Paths -RemoteRoot $Script:Remote
+        $Again | Should -BeNullOrEmpty
+        # The swapped journal was not merged into the local vault.
+        @(Get-SaveJournal -Paths $Script:Paths).Count | Should -Be 1
+    }
+
+    It "rejects a remote that drops a middle commit but keeps the tip" {
+        Write-TestSave -Dir $Script:Saves -Name "game.srm" -Bytes (New-TestBytes -Seed 1)
+        $A = New-SaveCommit -Paths $Script:Paths -Message "v1"
+        Write-TestSave -Dir $Script:Saves -Name "game.srm" -Bytes (New-TestBytes -Seed 2)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "v2"
+        $Push = Push-Chains -Paths $Script:Paths -RemoteRoot $Script:Remote
+
+        $PathsB = New-SecondVault -Tmp $Script:Tmp
+        $null = Fetch-Chains -Paths $PathsB -RemoteRoot $Script:Remote -VaultId $Push.VaultId
+
+        # Attacker deletes the v1 line from the remote journal, keeps v2.
+        # Match on the "id" field specifically: v2's parent field also names v1.
+        $RJ = Join-Path $Script:Remote "vaults" $Push.VaultId "journal.jsonl"
+        $IdField = '"id":"' + $A.id + '"'
+        $Rest = @(Get-Content $RJ | Where-Object { $_ -notmatch [regex]::Escape($IdField) -and -not [string]::IsNullOrWhiteSpace($_) })
+        $Rest | Set-Content $RJ -Force
+
+        $Fetch = Fetch-Chains -Paths $PathsB -RemoteRoot $Script:Remote
+        $Fetch | Should -BeNullOrEmpty
+        @(Get-SaveJournal -Paths $PathsB).Count | Should -Be 2
+    }
+
+    It "keeps pins independent per remote root" {
+        $Remote2 = Join-Path $Script:Tmp "remote2"
+        Write-TestSave -Dir $Script:Saves -Name "game.srm" -Bytes (New-TestBytes -Seed 1)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "v1"
+        $null = Push-Chains -Paths $Script:Paths -RemoteRoot $Script:Remote
+        $null = Push-Chains -Paths $Script:Paths -RemoteRoot $Remote2
+
+        # Roll back the first remote only.
+        $RJ = Join-Path $Script:Remote "vaults" (Get-ChainsVaultId -Paths $Script:Paths) "journal.jsonl"
+        "" | Set-Content $RJ -Force -NoNewline
+
+        (Push-Chains -Paths $Script:Paths -RemoteRoot $Script:Remote) | Should -BeNullOrEmpty
+        (Push-Chains -Paths $Script:Paths -RemoteRoot $Remote2) | Should -Not -BeNullOrEmpty
+    }
+}
