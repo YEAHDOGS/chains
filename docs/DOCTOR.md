@@ -54,6 +54,7 @@ Needs only `bash`, `python3` (stdlib), `df`, and `sha256sum`.
 | `config.json` parses | missing `version` | missing / invalid JSON |
 | `journal.jsonl` parses | — | missing, unreadable, broken line, entry without id |
 | Commit chain (refs) | first entry has a parent | duplicate id, **dangling parent ref** (a commit pointing at a parent that isn't in the journal) |
+| Commit id re-derivation | — | **id mismatch** (a journal entry's id doesn't recompute from its parent id, timestamp, message, and file list -- the entry was modified after commit, same check as `chains.ps1 verify`; pre-chain entries without a `parent` field are skipped) |
 | Snapshot presence | — | journal names a blob with no file under `snapshots/` |
 | Blob byte-identity | — | blob's SHA256 doesn't match its filename (corruption) |
 | Orphan snapshots | file on disk referenced by no commit | — |
@@ -73,6 +74,12 @@ will TOFU-pin the remote, per `SYNC.md`.
   truncated. Restore `journal.jsonl` from your last known-good copy (or
   fetch the journal from a remote you trust -- its pin will tell you if the
   remote itself was rolled back), then re-run the doctor.
+- **Commit id mismatch (integrity check).** A journal entry was modified
+  after it was committed -- message, file list, or timestamp rewritten --
+  even though the parent refs still line up. The journal is append-only, so
+  any rewrite is corruption or tampering: restore `journal.jsonl` from a
+  known-good copy or a pinned remote and re-run the doctor. (`chains.ps1
+  verify` runs the same re-derivation; the two tools agree.)
 - **Missing snapshot blob.** The history references bytes that are gone
   locally. `fetch` the vault from a remote that has them; the engine
   re-hashes every blob against the journal before accepting it. If no
@@ -104,15 +111,18 @@ will TOFU-pin the remote, per `SYNC.md`.
 
 ## Regression tests
 
-`tests/test-doctor.sh` builds six fixture vaults (healthy, dangling
+`tests/test-doctor.sh` builds eight fixture vaults (healthy, dangling
 parent, missing pins, stale sync, broken journal line, working-tree
-drift) in a temp dir, runs the doctor against each, and asserts exit
-codes, report markers, and the read-only contract (a hash of every fixture
-file must be identical before and after the run, including under `--fix`).
+drift, untracked saves, journal tampering) in a temp dir, runs the doctor
+against each, and asserts exit codes, report markers, and the read-only
+contract (a hash of every fixture file must be identical before and after
+the run, including under `--fix`). Fixture commit ids are minted with the
+same formula as the engine (`mint_id`), so the doctor's id re-derivation
+check treats honest fixtures as clean and only flags genuine tampering.
 It also runs the doctor with `--json` against the healthy, dangling-parent,
-stale-sync, and drift fixtures and asserts the JSON document parses,
-carries the same exit/result verdicts, has a valid findings schema, and
-emits no human-format lines. Run it from the repo root:
+stale-sync, drift, untracked, and tampered fixtures and asserts the JSON
+document parses, carries the same exit/result verdicts, has a valid
+findings schema, and emits no human-format lines. Run it from the repo root:
 
 ```bash
 bash tests/test-doctor.sh
