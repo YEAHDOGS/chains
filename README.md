@@ -75,6 +75,16 @@ Conflict policy: commits are content-addressed and the journal is append-only, s
 - GUI client.
 - More systems: GBC/GB, NDS, PSX memory cards (`.mcr`).
 
+## Tests
+
+`tests/chains.Tests.ps1` is a Pester v5 suite locking in the save → commit → diff → restore cycle. Run it with:
+
+```powershell
+Invoke-Pester -Path ./tests
+```
+
+Every test builds a throwaway vault under the OS temp folder — nothing touches real saves.
+
 ## Origin
 
 Chains started life as the `saves/` module ("SaveVault") inside the Castle repo, then moved out to stand on its own.
