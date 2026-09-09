@@ -69,6 +69,14 @@ on the remote; a missing id aborts the sync before any local state changes.
   it, so a poisoned remote can't launder itself through a retry.
 - Pins are per remote root *and* per vault id: one USB stick hosting two
   vaults, or one vault syncing to USB + LAN share, get independent pins.
+- Re-trusting a remote: the pin is fail-closed on purpose, so if you
+  *legitimately* wipe or migrate a remote (new USB stick, rebuilt share),
+  every push/fetch to it will abort with the rollback warning and the pin
+  will never move — sync is stuck by design. To re-trust it, delete the pin
+  entry (keyed `"<remote root>|<vault id>"`) or the whole `remotePins`
+  object from `.chains/config.json`, then push again: first contact is
+  trusted and a fresh pin is recorded. Treat this like deleting an SSH
+  known-hosts line — only do it when you know why the remote changed.
 
 ## Conflict policy
 
