@@ -14,6 +14,9 @@ records the real-world formats the fixtures and tests are modeled on.
 | `.sav` | GB/GBC | 8 KB / 32 KB | mGBA, VBA-M, RetroArch | Same raw-dump convention |
 | `.mcr` | PSX | 128 KB | DuckStation, ePSXe, RetroArch (Beetle PSX core) | Raw memory-card dump, no header |
 | `.dsv` | NDS | 512 KB typical (flash size varies per game) | DeSmuME | Raw save + small DeSmuME footer; Chains stores the bytes opaquely |
+| `.sra` | N64 | 32 KB | Project64, mupen64plus, RetroArch (ParaLLEl core) | SRAM dump, no header |
+| `.eep` | N64 | 2 KB (512-byte for some games) | Project64, mupen64plus, RetroArch (ParaLLEl core) | EEPROM dump, no header |
+| `.fla` | N64 | 128 KB | Project64, mupen64plus, RetroArch (ParaLLEl core) | FlashRAM dump, no header |
 | `.SaveRAM` | multi-system | varies per system (e.g. 8/32 KB SNES SRAM) | BizHawk | Raw SaveRAM dump written next to the ROM (e.g. `Game.SaveRAM`); matched case-insensitively |
 
 Battery saves are the future-proof format: any emulator for the system can
@@ -39,7 +42,7 @@ bytes are only guaranteed meaningful to the emulator build that wrote them.
 - **mGBA** may write a `.sav` alongside RTC/timing sidecar data for some
   games; the `.sav` itself stays a raw dump. Sidecars with other extensions
   are ignored unless they match a tracked pattern (`*.sav` / `*.srm` /
-  `*.state*` / `*.mcr` / `*.dsv`).
+  `*.state*` / `*.mcr` / `*.dsv` / `*.sra` / `*.eep` / `*.fla`).
 - **DeSmuME** writes `.dsv` battery saves (raw flash data plus a small
   DeSmuME footer) — by default in its Battery folder next to the ROM path.
   Chains never parses the footer; the snapshot is the full file bytes, so
@@ -52,6 +55,11 @@ bytes are only guaranteed meaningful to the emulator build that wrote them.
   `watch -Add` covers the rest.
 - **BizHawk** multi-system saves use `.SaveRAM` (tracked); like
   everything else, they round-trip as opaque bytes — never parsed.
+- **N64**: Project64/mupen64plus battery saves are SRAM (`.sra`, 32 KB),
+  EEPROM (`.eep`, 2 KB / 512-byte), or FlashRAM (`.fla`, 128 KB) dumps —
+  three extensions for the three save types the hardware used. Chains
+  tracks all three; Controller Pak files (`.mpk`) are *not* tracked, since
+  they're peripheral data rather than cartridge battery saves.
 
 ## Non-goals
 
