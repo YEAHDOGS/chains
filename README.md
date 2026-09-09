@@ -32,11 +32,12 @@ Battery saves and save states — the files that hold *your progress*:
 | GBA | `.sav` | mGBA, VBA-M, RetroArch (mGBA/VBA cores) |
 | N64 | `.sra` / `.eep` / `.fla` | Project64, mupen64plus, RetroArch (ParaLLEl core) |
 | PSX | `.mcr` | DuckStation, ePSXe, RetroArch (Beetle PSX core) |
+| PS2 | `.ps2` | PCSX2, RetroArch (PCSX2 core) |
 | NDS | `.dsv` | DeSmuME |
 | Any (BizHawk) | `.SaveRAM` | BizHawk (multi-system SaveRAM dumps) |
 | Any | `.state*` | save states (emulator-specific, less portable) |
 
-Tracked patterns: `*.srm`, `*.sav`, `*.state*`, `*.mcr`, `*.dsv`, `*.SaveRAM`, `*.sra`, `*.eep`, `*.fla`. Only save data is ever stored — **never ROMs or firmware** (those live in the separate `arcade/` project).
+Tracked patterns: `*.srm`, `*.sav`, `*.state*`, `*.mcr`, `*.ps2`, `*.dsv`, `*.SaveRAM`, `*.sra`, `*.eep`, `*.fla`. Only save data is ever stored — **never ROMs or firmware** (those live in the separate `arcade/` project).
 
 > Save states are emulator-version-sensitive; battery saves (`.srm`/`.sav`) are the portable, future-proof format. When in doubt, save in-game, not just save-state.
 
