@@ -8,14 +8,42 @@ It reads, it never writes.
 ## Usage
 
 ```bash
-bash scripts/chains-doctor.sh [vault-root] [--fix]
+bash scripts/chains-doctor.sh [vault-root] [--fix] [--json]
 ```
 
 `vault-root` is the directory containing `.chains/` (default: current
 directory). Exit codes: **0** healthy, **1** warnings only, **2** errors.
 `--fix` is accepted for forward compatibility but is report-only in this
 pass — the doctor has no write code paths at all, so it cannot modify your
-saves even by accident.
+saves even by accident. `--json` prints one machine-readable JSON document
+on stdout and nothing else, with the same exit codes and the same findings
+as the human report — pipe it into scripts, cron jobs, or CI:
+
+```json
+{
+  "vault": "/path/to/vault",
+  "result": "healthy",        // "healthy" | "warnings" | "errors"
+  "exit": 0,                  // mirrors the process exit code
+  "errors": 0,
+  "warnings": 0,
+  "findings": [
+    { "severity": "ok", "message": "config.json parses" }
+  ],
+  "summary": {
+    "commit_count": 2,
+    "blob_count": 2,
+    "pin_count": 1,
+    "head": "b2c3d4e5f6a7",
+    "head_files": [ { "key": "...", "rel": "game.srm", "sha256": "..." } ],
+    "referenced": [ "<sha256>", "..." ],
+    "watch_paths": [ "/path/to/saves" ]
+  }
+}
+```
+
+Finding severities are `ok`, `warn`, `fail`, and `info`. `--json` is
+covered by the same read-only contract as the human report: it never
+writes inside (or outside) the vault.
 
 Needs only `bash`, `python3` (stdlib), `df`, and `sha256sum`.
 
@@ -71,7 +99,11 @@ will TOFU-pin the remote, per `SYNC.md`.
 parent, missing pins, stale sync, broken journal line) in a temp dir, runs
 the doctor against each, and asserts exit codes, report markers, and the
 read-only contract (a hash of every fixture file must be identical before
-and after the run, including under `--fix`). Run it from the repo root:
+and after the run, including under `--fix`). It also runs the doctor with
+`--json` against the healthy, dangling-parent, and stale-sync fixtures and
+asserts the JSON document parses, carries the same exit/result verdicts,
+has a valid findings schema, and emits no human-format lines. Run it from
+the repo root:
 
 ```bash
 bash tests/test-doctor.sh
