@@ -2,8 +2,9 @@
 # Chains -- "git for save data" engine
 # ==============================================================================
 # Version control for emulator save files (battery saves like SNES .srm,
-# GBA .sav, PSX memory cards (.mcr), DeSmuME NDS (.dsv), and BizHawk
-# .SaveRAM, plus save states). Snapshots are content-addressed by SHA256 and
+# GBA .sav, N64 battery saves (.sra/.eep/.fla), PSX memory cards (.mcr),
+# DeSmuME NDS (.dsv), and BizHawk .SaveRAM, plus save states).
+# Snapshots are content-addressed by SHA256 and
 # recorded in an append-only JSON-lines journal -- a tiny git for the files
 # that hold your progress.
 #
@@ -15,7 +16,7 @@
 # Only save data is ever stored here -- never ROMs or firmware.
 # ==============================================================================
 
-$Script:SavePatterns = @("*.srm", "*.sav", "*.state*", "*.mcr", "*.dsv", "*.SaveRAM")
+$Script:SavePatterns = @("*.srm", "*.sav", "*.state*", "*.mcr", "*.dsv", "*.SaveRAM", "*.sra", "*.eep", "*.fla")
 
 function Get-VaultPaths {
     param([Parameter(Mandatory = $true)][string]$VaultRoot)
