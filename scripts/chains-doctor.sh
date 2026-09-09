@@ -13,6 +13,9 @@
 #     exist at its watched source path, and the bytes still there are
 #     re-hashed against the committed blob -- a mismatch means played-but-
 #     uncommitted progress (the save changed since the last commit)
+#   - untracked save files: saves matching the engine's patterns that live
+#     under a watched path but are NOT in HEAD's tracked set (a new game
+#     played but never committed) would not come back from a restore
 #   - remote fingerprint pin presence (TOFU pins in config.json)
 #   - last-sync staleness from pin timestamps
 #   - disk-space sanity on the vault's filesystem
@@ -413,9 +416,61 @@ for f in s["head_files"]:
             fi
         done <<< "$WATCHES"
     fi
+    # --- 9. untracked save files in watched dirs --------------------------------
+    # A save matching the engine's patterns (*.srm, *.sav, *.state*) that
+    # lives under a watched path but is NOT in HEAD's tracked set is a file
+    # `chains.ps1 restore HEAD` would never bring back -- e.g. a new game
+    # played since the last commit. This is the commit-side twin of check 7
+    # (drift covers tracked files that changed; this covers files never
+    # tracked at all).
+    #
+    # Watch-relative identity mirrors the engine: key "<watch>::<rel>" where
+    # <rel> is the path relative to the watch dir, so rel equality against
+    # HEAD's files decides "tracked". Missing watch dirs are skipped --
+    # they are already check 8's finding.
+    HEAD_TRACKED="$(python3 -c '
+import json,sys
+s=json.loads(sys.argv[1])
+for f in s["head_files"]:
+    key=f.get("key","")
+    if "::" in key:
+        w,rel=key.rsplit("::",1)
+        print(w+"\t"+rel)' "$SUMMARY_JSON")"
+    UNTRACKED_LIST="$(mktemp)"
+    printf '%s\n' "$HEAD_TRACKED" > "$UNTRACKED_LIST"
+    UNTRACKED_COUNT=0
+    SHOWN=0
+    SHOW_MAX=20
+    while IFS= read -r w; do
+        [ -z "$w" ] && continue
+        w="${w%/}"
+        [ -d "$w" ] || continue
+        while IFS= read -r -d '' cand; do
+            # The vault's own .chains dir can never be a save source; skip it
+            # if a watch path happens to enclose the vault.
+            case "$cand" in
+                "$CHAINS"/*) continue ;;
+            esac
+            rel="${cand#"$w"/}"
+            if ! grep -qF -- "$w"$'\t'"$rel" "$UNTRACKED_LIST"; then
+                UNTRACKED_COUNT=$((UNTRACKED_COUNT + 1))
+                if [ "$SHOWN" -lt "$SHOW_MAX" ]; then
+                    report warn "save file not tracked in HEAD (never committed): $cand"
+                    WARNINGS=$((WARNINGS + 1))
+                    SHOWN=$((SHOWN + 1))
+                fi
+            fi
+        done < <(find "$w" \( -iname '*.srm' -o -iname '*.sav' -o -iname '*.state*' \) -type f -print0 2>/dev/null)
+    done <<< "$WATCHES"
+    rm -f "$UNTRACKED_LIST"
+    if [ "$UNTRACKED_COUNT" -gt "$SHOWN" ]; then
+        report warn "...and $((UNTRACKED_COUNT - SHOWN)) more untracked save file(s) not shown"
+        WARNINGS=$((WARNINGS + 1))
+    fi
+
 fi
 
-# --- 9. disk-space sanity -----------------------------------------------------
+# --- 10. disk-space sanity ----------------------------------------------------
 if AVAIL_KB="$(df -k --output=avail "$VAULT" 2>/dev/null | tail -n 1 | tr -d ' ')"; then
     if [ -n "$AVAIL_KB" ] && [ "$AVAIL_KB" -ge 0 ] 2>/dev/null; then
         AVAIL_MB=$((AVAIL_KB / 1024))

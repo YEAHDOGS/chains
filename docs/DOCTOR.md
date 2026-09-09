@@ -58,6 +58,7 @@ Needs only `bash`, `python3` (stdlib), `df`, and `sha256sum`.
 | Blob byte-identity | — | blob's SHA256 doesn't match its filename (corruption) |
 | Orphan snapshots | file on disk referenced by no commit | — |
 | HEAD working-tree drift | a file in the newest commit is gone from its watched source path; a file's bytes no longer match the committed blob (**uncommitted changes** -- progress since the last commit); watched path itself missing | — |
+| Untracked saves | save file matching `*.srm`/`*.sav`/`*.state*` under a watched path that is **not in HEAD** (a new game played but never committed -- `restore HEAD` would never bring it back) | — |
 | Remote fingerprint pins | vault synced before but no pins recorded; pin missing fingerprint/timestamp | `remotePins` not an object; pin entry malformed |
 | Last-sync staleness | newest pin older than 7 days | — |
 | Disk space | under 1 GiB free on the vault's filesystem (`CHAINS_DOCTOR_MIN_FREE_MB` overrides) | — |
@@ -93,6 +94,10 @@ will TOFU-pin the remote, per `SYNC.md`.
   save after your last commit. `commit` the current state to capture the
   progress -- or `restore` the commit to throw the new bytes away (the
   pre-restore auto-backup keeps them recoverable).
+- **Save file not tracked in HEAD.** A save exists under a watched path
+  that no commit covers -- typically a new game started after your last
+  commit. `commit` to bring it into history; if it's junk (a test ROM's
+  save), delete it by hand -- the doctor never touches your saves.
 - **HEAD files missing from the working tree.** The emulator deleted or
   moved them. Re-save in-game, or `restore` the commit to put the bytes
   back -- the doctor only reports; `chains.ps1 restore` does the writing.

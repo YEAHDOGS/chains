@@ -2,10 +2,10 @@
 # =============================================================================
 # Regression tests for chains doctor (scripts/chains-doctor.sh).
 #
-# Builds six fixture vaults in a temp dir -- healthy, dangling parent ref,
-# missing pins, stale sync, broken journal, working-tree drift -- plus a
-# --json pass over the healthy/dangling/stale/drift fixtures, runs the
-# doctor against each, and asserts the exit code (0 healthy / 1 warnings /
+# Builds seven fixture vaults in a temp dir -- healthy, dangling parent ref,
+# missing pins, stale sync, broken journal, working-tree drift, untracked
+# saves -- plus a --json pass over the healthy/dangling/stale/drift/
+# untracked fixtures, runs the doctor against each, and asserts the exit code (0 healthy / 1 warnings /
 # 2 errors), the machine-readable report schema, plus key output markers.
 # Also asserts the doctor is read-only: a hash of every file in the fixture
 # vault must be identical before and after the run.
@@ -170,6 +170,27 @@ commit_entry "b2c3d4e5f6a7" "a1b2c3d4e5f6" "$(iso_now)" "second" "$FILES6" >> "$
 # ...then the player keeps playing: the live .srm no longer matches HEAD.
 printf 'SAVE-F-PLAYED-ON' > "$W6/game.srm"
 
+# --- fixture 7: untracked saves (played a new game, never committed) ----------
+V7="$(mkvault untracked)"
+W7="$V7/saves"; mkdir -p "$W7/sub"
+printf 'SAVE-H' > "$W7/game.srm"
+printf 'SAVE-NEW-GAME' > "$W7/newgame.srm"      # never committed, flat
+printf 'SAVE-NEW-STATE' > "$W7/sub/secret.state"  # never committed, nested
+SHA_H="$(mkblob "$V7" 'SAVE-H')"
+write_config "$V7" "$(python3 - "$W7" "$(iso_now)" <<'PY'
+import json,sys
+print(json.dumps({"version":1,"created":sys.argv[2],"watchPaths":[sys.argv[1]],
+  "remotePins":{"usb|vault-7":{"fingerprint":"abc","ids":["c1"],"when":sys.argv[2]}}}))
+PY
+)"
+FILES7="$(python3 - "$W7" "$SHA_H" <<'PY'
+import json,sys
+w=sys.argv[1]
+print(json.dumps([{"key":w+"::game.srm","rel":"game.srm","sha256":sys.argv[2],"bytes":6}]))
+PY
+)"
+commit_entry "a1b2c3d4e5f6" "" "$(iso_now)" "first" "$FILES7" > "$V7/.chains/journal.jsonl"
+
 # --- run the doctor ------------------------------------------------------------
 echo ""
 echo "  chains doctor regression tests"
@@ -213,6 +234,12 @@ run_doctor "$V6"
 assert_exit 1 "$CODE" "working-tree drift"
 assert_contains "$OUT" "uncommitted changes" "drift reported"
 assert_contains "$OUT" "game.srm" "drifted file named"
+
+run_doctor "$V7"
+assert_exit 1 "$CODE" "untracked saves"
+assert_contains "$OUT" "not tracked in HEAD" "untracked saves reported"
+assert_contains "$OUT" "newgame.srm" "untracked flat save named"
+assert_contains "$OUT" "sub/secret.state" "untracked nested save named"
 
 # --fix must stay report-only: no writes, same health verdict
 BEFORE_FIX="$(snapshot_fixture "$V1")"
@@ -303,6 +330,21 @@ assert warns, "no drift finding in --json"'; then
     pass "--json carries the drift finding"
 else
     fail "--json carries the drift finding"
+fi
+
+run_doctor_json "$V7"
+assert_exit 1 "$JCODE" "--json on untracked-saves vault"
+[ "$(json_field "$JOUT" 'd["result"]')" = "warnings" ] && pass "--json untracked result=warnings" || fail "--json untracked result=warnings"
+if printf '%s' "$JOUT" | python3 -c '
+import json,sys
+d=json.loads(sys.stdin.read())
+warns=[f for f in d["findings"] if f["severity"]=="warn" and "not tracked in HEAD" in f["message"]]
+assert len(warns) == 2, "expected 2 untracked findings, got %d" % len(warns)
+assert any("newgame.srm" in f["message"] for f in warns), "flat untracked save missing"
+assert any("sub/secret.state" in f["message"] for f in warns), "nested untracked save missing"'; then
+    pass "--json carries both untracked findings"
+else
+    fail "--json carries both untracked findings"
 fi
 
 echo ""
