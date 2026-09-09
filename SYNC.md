@@ -106,6 +106,20 @@ home, report telemetry, or touch anything outside its vault-id namespace.
 .\chains.ps1 fetch -Remote "\\CASTLE\chains"     # pull down on another machine
 ```
 
+Bash twin (same contract, same pins, cross-compatible config):
+
+```bash
+bash scripts/chains-sync.sh <vault> <remote> --direction push
+bash scripts/chains-sync.sh <vault> <remote> --direction fetch [--vault-id <id>]
+```
+
+`--vault-id` pins an explicit remote vault id into `config.json`'s
+`syncVaultId`, so later bare fetches need no arguments. The bash executor
+writes pins in the exact format the PowerShell engine does
+(`fingerprint` = SHA256 over the sorted, newline-joined commit-id list, keyed
+`"<remote root>|<vault id>"`), so a vault synced by one twin can sync with
+the other.
+
 ### Preview a sync before running it
 
 ```bash
