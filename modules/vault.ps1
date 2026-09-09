@@ -36,7 +36,9 @@ function Read-VaultConfig {
 
 function Write-VaultConfig {
     param([hashtable]$Paths, [object]$Config)
-    ($Config | ConvertTo-Json -Depth 4) | Set-Content $Paths.Config -Force
+    # Depth 6: config -> remotePins -> pin entry -> ids array -> id strings
+    # (nested remote pins need the headroom; shallow configs are unaffected).
+    ($Config | ConvertTo-Json -Depth 6) | Set-Content $Paths.Config -Force
 }
 
 function Initialize-Chains {
@@ -530,6 +532,116 @@ function Get-SyncRemoteVaultPaths {
     }
 }
 
+# ==============================================================================
+# Remote fingerprint pinning -- TOFU rollback/replay protection for sync
+# ==============================================================================
+# Blobs are hash-checked and same-id-different-bytes journal collisions abort
+# the merge, but neither stops a *rollback*: a remote whose journal was
+# replaced with an older copy (or swapped for a different vault's journal)
+# would still "merge" cleanly and silently resurrect deleted history. The pin
+# closes that hole: after every successful push/fetch, the vault records the
+# set of commit ids it has seen on that remote root. The next sync requires
+# every pinned id to still be present. Trust-on-first-use, like SSH host keys.
+
+function Get-JournalFingerprint {
+    <#
+    .SYNOPSIS
+        Compact content fingerprint of a journal: SHA256 over the sorted,
+        deduplicated commit-id list. Order-independent, so two machines that
+        merged the same entry set in different timestamp orders agree.
+    #>
+    param([array]$Entries = @())
+    $Ids = @($Entries | ForEach-Object { $_.id } | Sort-Object -Unique)
+    $Bytes = [Text.Encoding]::UTF8.GetBytes(($Ids -join "`n"))
+    $Hash = [Security.Cryptography.SHA256]::Create().ComputeHash($Bytes)
+    return ([BitConverter]::ToString($Hash)).Replace("-", "").ToLower()
+}
+
+function Get-PinKey {
+    <#
+    .SYNOPSIS
+        Pin namespace: a remote root can host many vault ids, and one vault
+        can sync with many remote roots, so the pin is keyed by both.
+        ("|" is illegal in Windows paths, so it is a safe separator.)
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$RemoteRoot,
+        [Parameter(Mandatory = $true)][string]$VaultId
+    )
+    return "$RemoteRoot|$VaultId"
+}
+
+function Get-RemotePins {
+    <#
+    .SYNOPSIS
+        The pinned remote fingerprints from this vault's config, as a
+        hashtable keyed by pin key (remote root + vault id). Empty when
+        nothing is pinned yet.
+    #>
+    param([Parameter(Mandatory = $true)][hashtable]$Paths)
+    $Config = Read-VaultConfig -Paths $Paths
+    if (-not $Config -or -not $Config.remotePins) { return @{} }
+    $Pins = @{}
+    foreach ($p in $Config.remotePins.PSObject.Properties) { $Pins[$p.Name] = $p.Value }
+    return $Pins
+}
+
+function Set-RemotePin {
+    <#
+    .SYNOPSIS
+        Records (or refreshes) the fingerprint pin for a remote root + vault
+        id after a successful push/fetch. Call only on the success path -- a
+        failed sync must never move the pin.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Paths,
+        [Parameter(Mandatory = $true)][string]$RemoteRoot,
+        [Parameter(Mandatory = $true)][string]$VaultId,
+        [array]$Entries = @()
+    )
+    $Config = Read-VaultConfig -Paths $Paths
+    if (-not $Config) { return }
+    $Pins = Get-RemotePins -Paths $Paths
+    $Pins[(Get-PinKey -RemoteRoot $RemoteRoot -VaultId $VaultId)] = @{
+        fingerprint = (Get-JournalFingerprint -Entries $Entries)
+        ids         = @($Entries | ForEach-Object { $_.id } | Sort-Object -Unique)
+        when        = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $Config | Add-Member -NotePropertyName "remotePins" -NotePropertyValue $Pins -Force
+    Write-VaultConfig -Paths $Paths -Config $Config
+}
+
+function Test-RemotePin {
+    <#
+    .SYNOPSIS
+        Verifies the remote journal still contains every commit id this vault
+        has previously seen on this remote root + vault id. Missing ids mean
+        the remote was rolled back, truncated, or swapped for a different
+        vault -- the sync aborts before any local state changes. New ids
+        appended after the pin are normal and allowed. First contact has no
+        pin yet and is trusted (TOFU), then pinned on success.
+        Returns $true when the remote is acceptable, $false on violation.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Paths,
+        [Parameter(Mandatory = $true)][string]$RemoteRoot,
+        [Parameter(Mandatory = $true)][string]$VaultId,
+        [array]$RemoteEntries = @()
+    )
+    $Pins = Get-RemotePins -Paths $Paths
+    $Key = Get-PinKey -RemoteRoot $RemoteRoot -VaultId $VaultId
+    if (-not $Pins.ContainsKey($Key)) { return $true }
+    $RemoteIds = @{}
+    foreach ($e in $RemoteEntries) { $RemoteIds[$e.id] = $true }
+    foreach ($id in @($Pins[$Key].ids)) {
+        if (-not $RemoteIds.ContainsKey($id)) {
+            Write-Host "  [FAIL] Remote journal is missing commit $id pinned on a previous sync -- possible rollback or replay. Sync aborted; local vault untouched." -ForegroundColor Red
+            return $false
+        }
+    }
+    return $true
+}
+
 function Push-Chains {
     <#
     .SYNOPSIS
@@ -550,8 +662,12 @@ function Push-Chains {
     if (-not (Test-Path $R.Journal)) { "" | Set-Content $R.Journal -Force -NoNewline }
 
     $LocalEntries = @(Get-SaveJournal -Paths $Paths)
+    $RemoteEntries = @(Read-JournalFile -JournalPath $R.Journal)
+    if (-not (Test-RemotePin -Paths $Paths -RemoteRoot $RemoteRoot -VaultId $Id -RemoteEntries $RemoteEntries)) { return $null }
     $Added = Merge-JournalFile -JournalPath $R.Journal -Entries $LocalEntries
     if ($null -eq $Added) { return $null }
+    # Pin the remote as we just left it (now including our entries).
+    Set-RemotePin -Paths $Paths -RemoteRoot $RemoteRoot -VaultId $Id -Entries @(Read-JournalFile -JournalPath $R.Journal)
 
     # Upload blobs the remote is missing. Blob names are content hashes, so
     # a name collision is an integrity violation, never a silent overwrite.
@@ -597,6 +713,7 @@ function Fetch-Chains {
         return [pscustomobject]@{ VaultId = $Id; EntriesAdded = 0; BlobsFetched = 0 }
     }
     $RemoteEntries = @(Read-JournalFile -JournalPath $R.Journal)
+    if (-not (Test-RemotePin -Paths $Paths -RemoteRoot $RemoteRoot -VaultId $Id -RemoteEntries $RemoteEntries)) { return $null }
 
     # Stage + hash-check every blob we don't have yet, before touching the journal.
     $KnownIds = @{}
@@ -638,6 +755,8 @@ function Fetch-Chains {
 
     $Added = Merge-JournalFile -JournalPath $Paths.Journal -Entries $RemoteEntries
     if ($null -eq $Added) { return $null }
+    # Pin only on the success path -- a failed fetch must never move the pin.
+    Set-RemotePin -Paths $Paths -RemoteRoot $RemoteRoot -VaultId $Id -Entries $RemoteEntries
     Write-Host "  [OK] Fetched from ${RemoteRoot}: $Added new commit(s), $Staged new blob(s)." -ForegroundColor Green
     return [pscustomobject]@{ VaultId = $Id; EntriesAdded = $Added; BlobsFetched = $Staged }
 }
