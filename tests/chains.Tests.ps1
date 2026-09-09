@@ -160,6 +160,38 @@ Describe "Chains save-data engine" {
         $C.id | Should -Not -Be $A.id   # restore-then-recommit must not collide
     }
 
+    It "verifies an intact journal and blob store end to end" {
+        Write-TestSave -Dir $Script:Saves -Name "a.sav" -Bytes (New-TestBytes -Seed 1)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "first"
+        Write-TestSave -Dir $Script:Saves -Name "a.sav" -Bytes (New-TestBytes -Seed 2)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "second"
+
+        Test-SaveChain -Paths $Script:Paths | Should -BeTrue
+    }
+
+    It "detects journal tampering (message edit breaks the chain)" {
+        Write-TestSave -Dir $Script:Saves -Name "a.sav" -Bytes (New-TestBytes -Seed 1)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "honest message"
+
+        $Lines = @(Get-Content $Script:Paths.Journal | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $Tampered = $Lines[-1] | ConvertFrom-Json
+        $Tampered.message = "forged message"
+        $Lines[-1] = ($Tampered | ConvertTo-Json -Depth 5 -Compress)
+        $Lines | Set-Content $Script:Paths.Journal
+
+        Test-SaveChain -Paths $Script:Paths | Should -BeFalse
+    }
+
+    It "detects blob tampering (silent snapshot corruption)" {
+        Write-TestSave -Dir $Script:Saves -Name "a.sav" -Bytes (New-TestBytes -Seed 1)
+        $null = New-SaveCommit -Paths $Script:Paths -Message "first"
+        $Sha = @((Get-SaveJournal -Paths $Script:Paths)[-1].files)[0].sha256
+        $Blob = Join-Path $Script:Paths.Snapshots $Sha
+        [IO.File]::AppendAllBytes($Blob, [byte[]]@(0xFF))
+
+        Test-SaveChain -Paths $Script:Paths | Should -BeFalse
+    }
+
     It "derives commit ids deterministically from parent, timestamp, message, and tree" {
         $Files = @([pscustomobject]@{ key = "w::a.sav"; sha256 = "abc123" })
         $Id1 = New-SaveCommitId -Timestamp "2026-01-01T00:00:00Z" -Message "m" -FileList $Files

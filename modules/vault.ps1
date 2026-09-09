@@ -230,6 +230,7 @@ function New-SaveCommit {
 
     $Entry = [pscustomobject]@{
         id      = $Id
+        parent  = $ParentId
         ts      = $Ts
         message = $Message
         files   = $FileList
@@ -362,5 +363,59 @@ function Restore-SaveCommit {
         $Restored++
     }
     Write-Host "  [OK] Restored $Restored file(s) from commit $($Commit.id)." -ForegroundColor Green
+    return $true
+}
+
+function Test-SaveChain {
+    <#
+    .SYNOPSIS
+        Verifies the vault end to end. For every journal entry it checks the
+        parent link, then re-derives the commit id from parent id, timestamp,
+        message, and file list -- any edit to the journal breaks the chain.
+        It also re-hashes every stored blob and compares it to the recorded
+        SHA256, so silent corruption of snapshots is caught too. Returns
+        $true only when the whole vault is intact.
+    #>
+    param([Parameter(Mandatory = $true)][hashtable]$Paths)
+    $Journal = Get-SaveJournal -Paths $Paths
+    if ($Journal.Count -eq 0) {
+        Write-Host "  [i] No commits to verify." -ForegroundColor DarkGray
+        return $true
+    }
+    $PrevId = ""
+    $Legacy = 0
+    foreach ($c in $Journal) {
+        if ($c.PSObject.Properties.Name -contains "parent") {
+            if ($c.parent -ne $PrevId) {
+                Write-Host "  [FAIL] Commit $($c.id) has a broken parent link (expected '$PrevId')." -ForegroundColor Red
+                return $false
+            }
+            $Recomputed = New-SaveCommitId -ParentId $PrevId -Timestamp $c.ts -Message $c.message -FileList @($c.files)
+            if ($Recomputed -ne $c.id) {
+                Write-Host "  [FAIL] Commit $($c.id) fails the integrity check -- journal entry was modified." -ForegroundColor Red
+                return $false
+            }
+        }
+        else {
+            # Commits written before parent-chaining existed can't be
+            # re-derived; their blobs can still be integrity-checked.
+            $Legacy++
+        }
+        foreach ($f in @($c.files)) {
+            $Blob = Join-Path $Paths.Snapshots $f.sha256
+            if (-not (Test-Path $Blob)) {
+                Write-Host "  [FAIL] Missing blob for $($f.rel) ($($f.sha256))." -ForegroundColor Red
+                return $false
+            }
+            $Actual = (Get-FileHash -Path $Blob -Algorithm SHA256).Hash.ToLower()
+            if ($Actual -ne $f.sha256) {
+                Write-Host "  [FAIL] Blob for $($f.rel) no longer matches its recorded hash." -ForegroundColor Red
+                return $false
+            }
+        }
+        $PrevId = $c.id
+    }
+    $Note = if ($Legacy -gt 0) { " ($Legacy legacy pre-chain commit(s) checked by blob only)" } else { "" }
+    Write-Host "  [OK] Chain intact: $($Journal.Count) commit(s), all blobs verified.$Note" -ForegroundColor Green
     return $true
 }

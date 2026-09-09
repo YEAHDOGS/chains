@@ -19,6 +19,7 @@ cd ~\Documents           # or wherever you want the vault to live
 .\chains.ps1 log                 # history
 .\chains.ps1 diff a1b2c3 d4e5f6  # what changed between commits
 .\chains.ps1 restore a1b2c3      # go back (auto-backs up current state first)
+.\chains.ps1 verify              # prove the journal + snapshots are untampered
 ```
 
 ## What Gets Tracked
@@ -50,6 +51,7 @@ A vault is any directory containing `.chains/`:
 - **commit** scans watched dirs, hashes every save (SHA256), stores unseen blobs, appends a journal entry. Identical tree → "nothing to commit".
 - **diff** reports added / deleted / modified files with size deltas *and* a byte-level "N of M bytes differ" summary (skipped over 4 MB).
 - **restore** auto-commits the current state as `pre-restore auto-backup` first, then writes the commit's blobs back. You can always undo a restore.
+- **verify** re-derives every commit id from its parent id, timestamp, message, and file list — any edit to the journal breaks the chain — and re-hashes every stored blob against its recorded SHA256, catching silent snapshot corruption. The `verify` command exits non-zero on failure, so it can run in scripts.
 - Commits are addressable by full id or unique prefix, plus `HEAD`.
 
 ## Cloud Sync

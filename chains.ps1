@@ -12,6 +12,7 @@
     .\chains.ps1 log
     .\chains.ps1 diff abc123 def456
     .\chains.ps1 restore abc123
+    .\chains.ps1 verify
 #>
 param(
     [Parameter(Position = 0)]
@@ -61,6 +62,7 @@ function Show-Usage {
     Write-Host "  .\chains.ps1 log                   Show commit history" -ForegroundColor White
     Write-Host "  .\chains.ps1 diff <a> <b>          Compare two commits" -ForegroundColor White
     Write-Host "  .\chains.ps1 restore <ref>         Restore a commit (auto-backs up first)" -ForegroundColor White
+    Write-Host "  .\chains.ps1 verify                Check journal + blob integrity" -ForegroundColor White
     Write-Host ""
     Write-Host "  -Path <dir> selects the vault root (default: current directory)." -ForegroundColor DarkGray
     Write-Host ""
@@ -110,6 +112,11 @@ switch ($Command.ToLower()) {
             if ($c.message) { Write-Host "      $($c.message)" -ForegroundColor White }
         }
         Write-Host ""
+    }
+    "verify" {
+        $Paths = Get-VaultPaths -VaultRoot $VaultRoot
+        if (-not (Test-Path $Paths.Dir)) { Write-Host "  [FAIL] Not a Chains. Run 'init' first." -ForegroundColor Red; Exit 1 }
+        if (Test-SaveChain -Paths $Paths) { Exit 0 } else { Exit 1 }
     }
     "diff" {
         # diff takes two positional refs: .\chains.ps1 diff <a> <b>
