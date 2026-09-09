@@ -14,6 +14,7 @@ records the real-world formats the fixtures and tests are modeled on.
 | `.sav` | GB/GBC | 8 KB / 32 KB | mGBA, VBA-M, RetroArch | Same raw-dump convention |
 | `.mcr` | PSX | 128 KB | DuckStation, ePSXe, RetroArch (Beetle PSX core) | Raw memory-card dump, no header |
 | `.dsv` | NDS | 512 KB typical (flash size varies per game) | DeSmuME | Raw save + small DeSmuME footer; Chains stores the bytes opaquely |
+| `.SaveRAM` | multi-system | varies per system (e.g. 8/32 KB SNES SRAM) | BizHawk | Raw SaveRAM dump written next to the ROM (e.g. `Game.SaveRAM`); matched case-insensitively |
 
 Battery saves are the future-proof format: any emulator for the system can
 read them. Chains' guidance is **save in-game, not just save-state**.
@@ -49,8 +50,8 @@ bytes are only guaranteed meaningful to the emulator build that wrote them.
 - **RetroArch** save locations vary per core and per config (`saves/` under
   the config dir by default); `watch -Known` covers the defaults, explicit
   `watch -Add` covers the rest.
-- **BizHawk** multi-system saves sometimes use `.SaveRAM` — not yet in the
-  default watch patterns; add the dir explicitly and propose the pattern.
+- **BizHawk** multi-system saves use `.SaveRAM` (tracked); like
+  everything else, they round-trip as opaque bytes — never parsed.
 
 ## Non-goals
 
