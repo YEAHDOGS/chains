@@ -31,6 +31,14 @@ They are **not portable across emulator versions** — a state from Snes9x
 1.60 may not load in 1.62. Chains versions them like anything else, but the
 bytes are only guaranteed meaningful to the emulator build that wrote them.
 
+**PPSSPP** save states are tracked as `` `.ppst` `` files — they live in
+`PSP/PPSSPP_STATE/` and are named `<GAMEID>_<version>_<slot>.ppst` (e.g.
+`ULES01521_1.00_0.ppst`; PPSSPP also writes an `.undo.ppst` autosave
+variant). PPSSPP writes a same-basename `.png` thumbnail next to each
+state — the thumbnail is deliberately *not* tracked. In-game saves are
+per-game folders under `PSP/SAVEDATA/` with no single-file extension, so
+the `.ppst` state is the versioned unit; save in-game when you can.
+
 ## Why byte-identity is the whole contract
 
 - Snapshots are stored as full file bytes, keyed by SHA256 of the exact
@@ -44,7 +52,7 @@ bytes are only guaranteed meaningful to the emulator build that wrote them.
 - **mGBA** may write a `.sav` alongside RTC/timing sidecar data for some
   games; the `.sav` itself stays a raw dump. Sidecars with other extensions
   are ignored unless they match a tracked pattern (`*.sav` / `*.srm` /
-  `*.state*` / `*.mcr` / `*.ps2` / `*.gci` / `*.dsv` / `*.SaveRAM` / `*.sra` / `*.eep` / `*.fla`).
+  `*.state*` / `*.mcr` / `*.ps2` / `*.gci` / `*.ppst` / `*.dsv` / `*.SaveRAM` / `*.sra` / `*.eep` / `*.fla`).
 - **DeSmuME** writes `.dsv` battery saves (raw flash data plus a small
   DeSmuME footer) — by default in its Battery folder next to the ROM path.
   Chains never parses the footer; the snapshot is the full file bytes, so
@@ -62,6 +70,13 @@ bytes are only guaranteed meaningful to the emulator build that wrote them.
   Raw memory-card dumps (`*.raw`) are *not* tracked — one `*.gci` per game
   is the portable unit, and the opaque-bytes rule means a card dump would
   still round-trip as a blob if tracked manually.
+- **PPSSPP** save states (`*.ppst`, slots 0–4) are emulator-version snapshots
+  like everything under `*.state*` — not portable across PPSSPP versions.
+  They live in `PSP/PPSSPP_STATE/` next to a same-basename `.png` thumbnail
+  (untracked) and an optional `.undo.ppst` autosave variant (tracked, same
+  extension). PPSSPP's *in-game* saves are whole folders under
+  `PSP/SAVEDATA/<GAMEID>/`, not single files, so Chains versions the state,
+  not the folder.
 - **RetroArch** save locations vary per core and per config (`saves/` under
   the config dir by default); `watch -Known` covers the defaults, explicit
   `watch -Add` covers the rest.
