@@ -35,6 +35,11 @@ Tracked patterns: `*.srm`, `*.sav`, `*.state*`. Only save data is ever stored �
 
 > Save states are emulator-version-sensitive; battery saves (`.srm`/`.sav`) are the portable, future-proof format. When in doubt, save in-game, not just save-state.
 
+## Architecture
+
+Design decisions — storage model, identity, sync, security, versioning — are
+recorded in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## How It Works
 
 A vault is any directory containing `.chains/`:
