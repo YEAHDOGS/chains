@@ -472,13 +472,44 @@ for f in s["head_files"]:
         done <<< "$WATCHES"
     fi
     # --- 9. untracked save files in watched dirs --------------------------------
-    # A save matching the engine's patterns (*.srm, *.sav, *.state*,
-    # *.sgm, *.zst, *.savestate) that
-    # lives under a watched path but is NOT in HEAD's tracked set is a file
+    # A save matching one of the engine's tracked patterns that lives under
+    # a watched path but is NOT in HEAD's tracked set is a file
     # `chains.ps1 restore HEAD` would never bring back -- e.g. a new game
     # played since the last commit. This is the commit-side twin of check 7
     # (drift covers tracked files that changed; this covers files never
     # tracked at all).
+    #
+    # Pattern source: the engine's $Script:SavePatterns in
+    # modules/vault.ps1 (the single source of truth). When this script runs
+    # from the chains repo, the patterns are read from the engine at scan
+    # time, so the doctor can never drift behind a newly added format.
+    # Standalone copies of this script (no repo tree around it) fall back to
+    # the bundled list below -- kept in lockstep with the engine by
+    # tests/test-doctor-patterns.sh. Add the new extension in BOTH places
+    # when the engine grows.
+    SAVE_PATS=()
+    _SELF="$0"
+    _ENGINE=""
+    case "$_SELF" in
+        */*) _ENGINE="$(cd "$(dirname "$_SELF")" 2>/dev/null && pwd)/../modules/vault.ps1" ;;
+    esac
+    if [ -n "$_ENGINE" ] && [ -f "$_ENGINE" ]; then
+        while IFS= read -r _pat; do
+            [ -n "$_pat" ] && SAVE_PATS+=("$_pat")
+        done < <(grep -E '^\$Script:SavePatterns' "$_ENGINE" | grep -oE '"\*[^"]*"' | tr -d '"')
+    fi
+    if [ "${#SAVE_PATS[@]}" -eq 0 ]; then
+        # FALLBACK-PATTERNS-BEGIN -- mirror of $Script:SavePatterns; see above.
+        SAVE_PATS=( "*.srm" "*.sav" "*.state*" "*.sgm" "*.zst" "*.savestate"
+                    "*.mcr" "*.ps2" "*.gci" "*.ppst" "*.dsv" "*.SaveRAM"
+                    "*.sra" "*.eep" "*.fla" "*.vmi" "*.vms" )
+        # FALLBACK-PATTERNS-END
+    fi
+    FIND_PATS=()
+    for _pat in "${SAVE_PATS[@]}"; do
+        [ "${#FIND_PATS[@]}" -gt 0 ] && FIND_PATS+=( -o )
+        FIND_PATS+=( -iname "$_pat" )
+    done
     #
     # Watch-relative identity mirrors the engine: key "<watch>::<rel>" where
     # <rel> is the path relative to the watch dir, so rel equality against
@@ -516,7 +547,7 @@ for f in s["head_files"]:
                     SHOWN=$((SHOWN + 1))
                 fi
             fi
-        done < <(find "$w" \( -iname '*.srm' -o -iname '*.sav' -o -iname '*.state*' -o -iname '*.sgm' -o -iname '*.zst' -o -iname '*.savestate' \) -type f -print0 2>/dev/null)
+        done < <(find "$w" \( "${FIND_PATS[@]}" \) -type f -print0 2>/dev/null)
     done <<< "$WATCHES"
     rm -f "$UNTRACKED_LIST"
     if [ "$UNTRACKED_COUNT" -gt "$SHOWN" ]; then
