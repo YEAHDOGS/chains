@@ -472,7 +472,8 @@ for f in s["head_files"]:
         done <<< "$WATCHES"
     fi
     # --- 9. untracked save files in watched dirs --------------------------------
-    # A save matching the engine's patterns (*.srm, *.sav, *.state*) that
+    # A save matching the engine's patterns (*.srm, *.sav, *.state*,
+    # *.sgm, *.zst, *.savestate) that
     # lives under a watched path but is NOT in HEAD's tracked set is a file
     # `chains.ps1 restore HEAD` would never bring back -- e.g. a new game
     # played since the last commit. This is the commit-side twin of check 7
@@ -515,7 +516,7 @@ for f in s["head_files"]:
                     SHOWN=$((SHOWN + 1))
                 fi
             fi
-        done < <(find "$w" \( -iname '*.srm' -o -iname '*.sav' -o -iname '*.state*' \) -type f -print0 2>/dev/null)
+        done < <(find "$w" \( -iname '*.srm' -o -iname '*.sav' -o -iname '*.state*' -o -iname '*.sgm' -o -iname '*.zst' -o -iname '*.savestate' \) -type f -print0 2>/dev/null)
     done <<< "$WATCHES"
     rm -f "$UNTRACKED_LIST"
     if [ "$UNTRACKED_COUNT" -gt "$SHOWN" ]; then

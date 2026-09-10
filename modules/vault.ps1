@@ -16,7 +16,7 @@
 # Only save data is ever stored here -- never ROMs or firmware.
 # ==============================================================================
 
-$Script:SavePatterns = @("*.srm", "*.sav", "*.state*", "*.mcr", "*.ps2", "*.gci", "*.ppst", "*.dsv", "*.SaveRAM", "*.sra", "*.eep", "*.fla", "*.vmi", "*.vms")
+$Script:SavePatterns = @("*.srm", "*.sav", "*.state*", "*.sgm", "*.zst", "*.savestate", "*.mcr", "*.ps2", "*.gci", "*.ppst", "*.dsv", "*.SaveRAM", "*.sra", "*.eep", "*.fla", "*.vmi", "*.vms")
 
 function Get-VaultPaths {
     param([Parameter(Mandatory = $true)][string]$VaultRoot)

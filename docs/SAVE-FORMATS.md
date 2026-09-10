@@ -40,6 +40,18 @@ state — the thumbnail is deliberately *not* tracked. In-game saves are
 per-game folders under `PSP/SAVEDATA/` with no single-file extension, so
 the `.ppst` state is the versioned unit; save in-game when you can.
 
+Three more state extensions are tracked beyond `*.state*`:
+
+| File | System | Emulators | Notes |
+|---|---|---|---|
+| `.sgm` | GBA/GB/GBC | VBA-M (and original VBA) | Save state, named `<romname>.sgm`; VBA-M keeps up to 10 slots (`<romname>.sgN` numeric variants are rare — the plain `.sgm` is the convention) |
+| `.zst` | SNES | ZSNES | Save state slots are `game.zst`, `game.zs1`–`game.zs9` — Chains tracks `*.zst` only. **Caveat:** `.zst` is also the zstd compression extension; a zstd archive in a watched save dir would be versioned as bytes — harmless (opaque round-trip), but keep watch dirs save-only anyway |
+| `.savestate` | PSX | DuckStation | Named `<GAMEID>_<slot>.savestate` under the savestates dir (e.g. `SLUS-01066_1.savestate`); DuckStation also writes same-basename `.png` thumbnails, which are deliberately *not* tracked |
+
+Like all save states, these are version-sensitive to the emulator build
+that wrote them — Chains preserves the bytes exactly, it does not make
+them load anywhere else.
+
 ## Paired exports (Dreamcast VMU)
 
 Dreamcast saves live on Visual Memory Units. **Flycast**, **Redream**, and
