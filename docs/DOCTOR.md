@@ -85,7 +85,7 @@ records too.
 | Blob byte-identity | — | blob's SHA256 doesn't match its filename (corruption) |
 | Orphan snapshots | file on disk referenced by no commit | — |
 | HEAD working-tree drift | a file in the newest commit is gone from its watched source path; a file's bytes no longer match the committed blob (**uncommitted changes** -- progress since the last commit); watched path itself missing | — |
-| Untracked saves | save file matching `*.srm`/`*.sav`/`*.state*` under a watched path that is **not in HEAD** (a new game played but never committed -- `restore HEAD` would never bring it back) | — |
+| Untracked saves | save file matching one of the engine's tracked patterns under a watched path that is **not in HEAD** (a new game played but never committed -- `restore HEAD` would never bring it back). The doctor reads the pattern list from the engine's `$Script:SavePatterns` when run from the repo | — |
 | Remote fingerprint pins | vault synced before but no pins recorded; pin missing fingerprint/timestamp | `remotePins` not an object; pin entry malformed |
 | Last-sync staleness | newest pin older than 7 days | — |
 | Disk space | under 1 GiB free on the vault's filesystem (`CHAINS_DOCTOR_MIN_FREE_MB` overrides) | — |
