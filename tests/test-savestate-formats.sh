@@ -34,8 +34,12 @@ done
 ok
 
 # Guard: the doctor's untracked-save scan must know the new patterns too.
+# The doctor derives the patterns from the engine at scan time; standalone
+# copies use the bundled fallback list (kept in sync with the engine by
+# tests/test-doctor-patterns.sh), so the guard targets that list now.
 for pat in "*.sgm" "*.zst" "*.savestate"; do
-  grep -qF -- "-iname '$pat'" "$REPO/scripts/chains-doctor.sh" \
+  sed -n '/# FALLBACK-PATTERNS-BEGIN/,/# FALLBACK-PATTERNS-END/p' "$REPO/scripts/chains-doctor.sh" \
+    | grep -qF -- "\"$pat\"" \
     || { echo "FAIL: chains-doctor.sh untracked scan missing $pat"; exit 1; }
 done
 ok
