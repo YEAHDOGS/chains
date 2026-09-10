@@ -20,6 +20,7 @@ records the real-world formats the fixtures and tests are modeled on.
 | `.eep` | N64 | 2 KB (512-byte for some games) | Project64, mupen64plus, RetroArch (ParaLLEl core) | EEPROM dump, no header |
 | `.fla` | N64 | 128 KB | Project64, mupen64plus, RetroArch (ParaLLEl core) | FlashRAM dump, no header |
 | `.SaveRAM` | multi-system | varies per system (e.g. 8/32 KB SNES SRAM) | BizHawk | Raw SaveRAM dump written next to the ROM (e.g. `Game.SaveRAM`); matched case-insensitively |
+| `.vmi` + `.vms` | Dreamcast | 44 B index + data in multiples of 512 B | Flycast, Redream, RetroArch (Flycast core) | Per-game VMU save export; `.vmi` is the index header, `.vms` the save data — tracked as a same-basename pair |
 
 Battery saves are the future-proof format: any emulator for the system can
 read them. Chains' guidance is **save in-game, not just save-state**.
@@ -38,6 +39,24 @@ variant). PPSSPP writes a same-basename `.png` thumbnail next to each
 state — the thumbnail is deliberately *not* tracked. In-game saves are
 per-game folders under `PSP/SAVEDATA/` with no single-file extension, so
 the `.ppst` state is the versioned unit; save in-game when you can.
+
+## Paired exports (Dreamcast VMU)
+
+Dreamcast saves live on Visual Memory Units. **Flycast**, **Redream**, and
+RetroArch's Flycast core export each per-game save as a same-basename pair
+in the VMU data directory:
+
+- `` `.vmi` `` — the Visual Memory System index: a fixed **44-byte header**
+  describing the save (game name, icon, data file reference).
+- `` `.vms` `` — the actual save data, sized in multiples of **512 bytes**.
+
+The pair is the atomic unit — a `.vms` without its `.vmi` loses the
+human-readable label and icon, so Chains tracks **both** patterns
+(`*.vmi`, `*.vms`). As with the other battery-save formats, the bytes are
+opaque: Chains stores the exported files byte-identical, so they can be
+dropped back into any VMU-capable emulator unchanged. Save in-game on the
+VMU; avoid snapshotting whole VMU card images unless the per-game export
+isn't available.
 
 ## Why byte-identity is the whole contract
 
