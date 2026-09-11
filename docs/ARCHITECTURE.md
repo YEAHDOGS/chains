@@ -182,6 +182,28 @@ per-format descriptor file — data, not code. The engine may one day read
 rules, magic bytes for validation-only checks); it will never `eval` a
 contributor's script.
 
+### Per-vault pattern configuration (the "git for files" expansion)
+
+**Status:** ACCEPTED (implemented 2026-09-11).
+
+The tracked-pattern registry grew a second layer: every vault carries
+`includePatterns` / `excludePatterns` in `config.json`, managed with the
+`patterns` command. The built-in `$Script:SavePatterns` remains the
+**default** include list — a vault without overrides behaves exactly like
+Chains v1, and the doctor's pattern extraction plus the
+`test-save-patterns.sh` documented-pattern check keep reading that default
+from the engine source. Exclude patterns win over include patterns, and
+the scanner never descends into `.chains` itself.
+
+**Recommendation: defaults stay save-data; overrides are per-vault, never
+global.** The recipe above is unchanged for adding new *save* formats (they
+extend the shared default list, documented and fixture-tested). A vault
+that wants arbitrary files (`*.md`, `*`) sets its own patterns instead —
+like `.gitignore`, this changes only what future scans pick up; history is
+untouched. Rationale: the default list is a shared, documented, doctor-
+verified contract; per-vault overrides keep experiments (and the future
+Castle OS versioning layer) from perturbing it.
+
 ---
 
 ## D4. Cloud sync — R2 backend on the SYNC.md contract, union-merge conflicts, client-side encryption
@@ -350,6 +372,15 @@ belongs in another tool.
 **Restore safety:** `restore` auto-commits the current tree as
 `pre-restore auto-backup` first — every restore is itself undoable. The
 journal's append-only rule means history is never rewritten by a restore.
+
+**Revision numbers:** every journal entry carries `seq`, a monotonic
+per-journal counter — the "which revision is this" half of the
+chain-of-custody vision (docs/VISION-FILES.md). The commit id remains the
+sole integrity anchor: `seq` is not part of the id seed, `verify`
+re-derives ids without it, and entries written before `seq` existed
+verify by blob only, exactly like pre-parent-chain entries. Each entry
+also snapshots the include/exclude patterns in effect, so "what was
+tracked when" is part of the permanent record.
 
 ---
 
