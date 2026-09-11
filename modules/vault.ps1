@@ -1,22 +1,31 @@
 # ==============================================================================
-# Chains -- "git for save data" engine
+# Chains -- "git for files" engine
 # ==============================================================================
-# Version control for emulator save files (battery saves like SNES .srm,
-# GBA .sav, N64 battery saves (.sra/.eep/.fla), PSX memory cards (.mcr),
-# DeSmuME NDS (.dsv), and BizHawk .SaveRAM, plus save states).
-# Snapshots are content-addressed by SHA256 and
-# recorded in an append-only JSON-lines journal -- a tiny git for the files
-# that hold your progress.
+# Version control for files, born as "git for save data": snapshot any set
+# of files -- battery saves (SNES .srm, GBA .sav, N64 .sra/.eep/.fla, PSX
+# memory cards .mcr, DeSmuME NDS .dsv, BizHawk .SaveRAM) and save states by
+# default -- write a message about the moment, browse history, diff commits,
+# and restore any point in time.
+# Snapshots are content-addressed by SHA256 and recorded in an append-only
+# JSON-lines journal -- a tiny git for the files that matter to you.
 #
 # Vault layout (<vault>/.chains/):
-#   config.json        { version, created, watchPaths: [...] }
+#   config.json        { version, created, watchPaths: [...],
+#                        includePatterns: [...], excludePatterns: [...] }
 #   journal.jsonl      one JSON object per commit (the history)
 #   snapshots/<sha>    full file bytes, deduped by content hash
 #
-# Only save data is ever stored here -- never ROMs or firmware.
+# By default only save data is tracked -- never ROMs or firmware. A vault
+# can opt into arbitrary files with the `patterns` command, which stores
+# per-vault include/exclude globs in config.json.
 # ==============================================================================
 
 $Script:SavePatterns = @("*.srm", "*.sav", "*.state*", "*.sgm", "*.zst", "*.savestate", "*.mcr", "*.ps2", "*.gci", "*.ppst", "*.dsv", "*.SaveRAM", "*.sra", "*.eep", "*.fla", "*.vmi", "*.vms")
+
+# Exclude list used when a vault has no per-vault excludePatterns configured.
+# Empty on purpose: a fresh vault behaves exactly like Chains v1 (only the
+# include patterns decide). Noise/ROM guards belong in per-vault excludes.
+$Script:DefaultExcludePatterns = @()
 
 function Get-VaultPaths {
     param([Parameter(Mandatory = $true)][string]$VaultRoot)
@@ -111,31 +120,173 @@ function Add-SaveWatchPath {
     return $true
 }
 
+# ==============================================================================
+# Tracked-file patterns -- the "git for files" expansion
+# ==============================================================================
+# A vault tracks whichever files its include patterns match (PowerShell
+# wildcards against the file name: "*.md", "*.srm", "*"). Exclude patterns
+# win over include patterns. Both lists live in config.json so every vault
+# can track something different; a vault without them behaves exactly like
+# Chains v1 (save-data defaults), which keeps old vaults working untouched.
+
+function Get-TrackedPatterns {
+    <#
+    .SYNOPSIS
+        The effective include/exclude pattern lists for this vault: the
+        per-vault config.json overrides when present, the save-data defaults
+        ($Script:SavePatterns / $Script:DefaultExcludePatterns) otherwise.
+    #>
+    param([Parameter(Mandatory = $true)][hashtable]$Paths)
+    $Include = @($Script:SavePatterns)
+    $Exclude = @($Script:DefaultExcludePatterns)
+    $Config = Read-VaultConfig -Paths $Paths
+    if ($Config) {
+        if ($Config.PSObject.Properties.Name -contains "includePatterns") { $Include = @($Config.includePatterns) }
+        if ($Config.PSObject.Properties.Name -contains "excludePatterns") { $Exclude = @($Config.excludePatterns) }
+    }
+    return @{ Include = $Include; Exclude = $Exclude }
+}
+
+function Split-PatternList {
+    <#
+    .SYNOPSIS
+        Splits a user-supplied glob list ("*.md; *.txt, *.ps1") into an array.
+        Empty input yields an empty array (which means "match nothing" for
+        include, "exclude nothing" for exclude).
+    #>
+    param([string]$List)
+    if ([string]::IsNullOrWhiteSpace($List)) { return @() }
+    return @($List -split '[;,]' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+}
+
+function Test-PatternListMatch {
+    <#
+    .SYNOPSIS
+        True when $Name matches any glob in $Patterns. Case-insensitive on
+        Windows, case-sensitive on Linux -- the same rule the filesystem
+        itself uses (and the same rule Get-ChildItem -Filter follows).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string[]]$Patterns = @()
+    )
+    $IsWinOS = ($PSVersionTable.OS -like "*Windows*") -or ($IsWindows -eq $true)
+    foreach ($p in $Patterns) {
+        if ([string]::IsNullOrWhiteSpace($p)) { continue }
+        if ($IsWinOS) { if ($Name -like $p) { return $true } }
+        else { if ($Name -clike $p) { return $true } }
+    }
+    return $false
+}
+
+function Show-TrackedPatterns {
+    <#
+    .SYNOPSIS
+        Prints the vault's effective include/exclude pattern lists.
+    #>
+    param([Parameter(Mandatory = $true)][hashtable]$Paths)
+    $Tracked = Get-TrackedPatterns -Paths $Paths
+    $Inc = if ($Tracked.Include.Count -gt 0) { $Tracked.Include -join ", " } else { "(none -- nothing is tracked)" }
+    $Exc = if ($Tracked.Exclude.Count -gt 0) { $Tracked.Exclude -join ", " } else { "(none)" }
+    Write-Host "  include: $Inc" -ForegroundColor White
+    Write-Host "  exclude: $Exc" -ForegroundColor DarkGray
+}
+
+function Set-TrackedPatterns {
+    <#
+    .SYNOPSIS
+        Updates the vault's include/exclude pattern lists in config.json.
+        -Include/-Exclude append globs; -Replace swaps the whole list;
+        -Reset drops the overrides and restores the save-data defaults.
+        Journal history is untouched -- this only changes what future scans
+        pick up, like editing .gitignore.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Paths,
+        [string[]]$Include = @(),
+        [string[]]$Exclude = @(),
+        [switch]$Replace,
+        [switch]$Reset
+    )
+    $Config = Read-VaultConfig -Paths $Paths
+    if (-not $Config) { Write-Host "  [FAIL] Not a Chains. Run 'init' first." -ForegroundColor Red; return $false }
+    if ($Reset) {
+        foreach ($Prop in @("includePatterns", "excludePatterns")) {
+            if ($Config.PSObject.Properties.Name -contains $Prop) { $Config.PSObject.Properties.Remove($Prop) }
+        }
+        Write-Host "  [OK] Patterns reset to the save-data defaults." -ForegroundColor Green
+    }
+    else {
+        if (-not $Replace -and $Include.Count -eq 0 -and $Exclude.Count -eq 0) {
+            Write-Host "  [FAIL] Nothing to set: pass -Include and/or -Exclude globs." -ForegroundColor Red
+            return $false
+        }
+        $Cur = Get-TrackedPatterns -Paths $Paths
+        if ($Include.Count -gt 0) {
+            $New = if ($Replace) { @($Include) } else { @($Cur.Include) + @($Include) }
+            $Config | Add-Member -NotePropertyName "includePatterns" -NotePropertyValue @($New | Select-Object -Unique) -Force
+        }
+        if ($Exclude.Count -gt 0) {
+            $New = if ($Replace) { @($Exclude) } else { @($Cur.Exclude) + @($Exclude) }
+            $Config | Add-Member -NotePropertyName "excludePatterns" -NotePropertyValue @($New | Select-Object -Unique) -Force
+        }
+        Write-Host "  [OK] Patterns updated." -ForegroundColor Green
+    }
+    Write-VaultConfig -Paths $Paths -Config $Config
+    Show-TrackedPatterns -Paths $Paths
+    return $true
+}
+
 function Get-SaveWorkingTree {
     <#
     .SYNOPSIS
-        Scans all watched paths for save files. Returns objects with:
+        Scans all watched paths for tracked files. Returns objects with:
         Key (watch-relative identity), FullPath, Sha256, Bytes.
+        "Tracked" is decided by the vault's include/exclude patterns
+        (Get-TrackedPatterns) -- by default the save-data globs, so an
+        unconfigured vault behaves exactly like Chains v1. The .chains
+        vault directory itself is never scanned, even when the vault root
+        is a watched path. Files matching several include patterns are
+        reported once.
     #>
     param([Parameter(Mandatory = $true)][hashtable]$Paths)
     $Config = Read-VaultConfig -Paths $Paths
     if (-not $Config) { return @() }
+    $Tracked = Get-TrackedPatterns -Paths $Paths
     $Files = @()
-    foreach ($Watch in $Config.watchPaths) {
-        if (-not (Test-Path $Watch)) { continue }
-        foreach ($Pattern in $Script:SavePatterns) {
-            foreach ($f in (Get-ChildItem -Path $Watch -Filter $Pattern -File -Recurse -ErrorAction SilentlyContinue)) {
-                $Rel = $f.FullName.Substring($Watch.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-                $Hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLower()
-                $Files += [pscustomobject]@{
-                    Key      = "$Watch::$Rel"
-                    FullPath = $f.FullName
-                    Rel      = $Rel
-                    Sha256   = $Hash
-                    Bytes    = $f.Length
+    $Seen = @{}
+    # The scan loop iterates $Script:SavePatterns in exactly this form --
+    # pinned by tests/test-save-patterns.sh and by the doctor's pattern
+    # extraction -- so the vault's effective include list is swapped in for
+    # the duration of the scan and restored afterwards.
+    $PatternBackup = $Script:SavePatterns
+    $Script:SavePatterns = @($Tracked.Include)
+    try {
+        foreach ($Watch in $Config.watchPaths) {
+            if (-not (Test-Path $Watch)) { continue }
+            foreach ($Pattern in $Script:SavePatterns) {
+                foreach ($f in (Get-ChildItem -Path $Watch -Filter $Pattern -File -Recurse -ErrorAction SilentlyContinue)) {
+                    if ($Seen.ContainsKey($f.FullName)) { continue }
+                    $Seen[$f.FullName] = $true
+                    # Never ingest the vault itself (config, journal, blobs).
+                    if (($f.FullName -split '[\\/]') -contains '.chains') { continue }
+                    # Exclude patterns win over include patterns.
+                    if (Test-PatternListMatch -Name $f.Name -Patterns $Tracked.Exclude) { continue }
+                    $Rel = $f.FullName.Substring($Watch.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+                    $Hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLower()
+                    $Files += [pscustomobject]@{
+                        Key      = "$Watch::$Rel"
+                        FullPath = $f.FullName
+                        Rel      = $Rel
+                        Sha256   = $Hash
+                        Bytes    = $f.Length
+                    }
                 }
             }
         }
+    }
+    finally {
+        $Script:SavePatterns = $PatternBackup
     }
     return $Files
 }
@@ -232,16 +383,37 @@ function New-SaveCommit {
     $ParentId = if ($Head) { $Head.id } else { "" }
     $Id = New-SaveCommitId -ParentId $ParentId -Timestamp $Ts -Message $Message -FileList $FileList
 
+    # Revision counter: the per-commit sequence number. This is what makes
+    # the history a *chain* you can point at ("revision 14") instead of a
+    # pile of timestamps. Journals written before this field existed keep
+    # working -- readers treat a missing seq as unknown, and verify/merge
+    # never depend on it (ids stay the sole integrity anchor).
+    $MaxSeq = 0
+    $HasSeq = $false
+    foreach ($e in $Journal) {
+        if ($e.PSObject.Properties.Name -contains "seq") {
+            $HasSeq = $true
+            if ($e.seq -gt $MaxSeq) { $MaxSeq = $e.seq }
+        }
+    }
+    $Seq = if ($HasSeq) { $MaxSeq + 1 } else { $Journal.Count + 1 }
+
+    # Snapshot of the patterns in effect: the audit trail for "what was
+    # tracked when", like the custody chain recording its own scope.
+    $Tracked = Get-TrackedPatterns -Paths $Paths
+
     $Entry = [pscustomobject]@{
-        id      = $Id
-        parent  = $ParentId
-        ts      = $Ts
-        message = $Message
-        files   = $FileList
+        id       = $Id
+        parent   = $ParentId
+        seq      = $Seq
+        ts       = $Ts
+        message  = $Message
+        patterns = [pscustomobject]@{ include = @($Tracked.Include); exclude = @($Tracked.Exclude) }
+        files    = $FileList
     }
     ($Entry | ConvertTo-Json -Depth 5 -Compress) | Add-Content $Paths.Journal
 
-    Write-Host "  [OK] Committed $Id -- $($Tree.Count) save file(s), $NewBlobs new blob(s)." -ForegroundColor Green
+    Write-Host "  [OK] Committed $Id (#$Seq) -- $($Tree.Count) file(s), $NewBlobs new blob(s)." -ForegroundColor Green
     if ($Message) { Write-Host "       ""$Message""" -ForegroundColor DarkGray }
     return $Entry
 }
@@ -807,6 +979,7 @@ function Get-SaveLog {
         }
         $Result += [pscustomobject]@{
             Id       = $c.id
+            Seq      = $(if ($c.PSObject.Properties.Name -contains "seq") { $c.seq } else { $null })
             When     = $c.ts
             Message  = $c.message
             Files    = @($c.files).Count
