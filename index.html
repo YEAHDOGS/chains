@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chains — git for files. Never lose a file again.</title>
+<meta name="description" content="Chains is version control for files: snapshot anything, diff two points in time byte-for-byte, restore any moment. No accounts, no telemetry.">
+<link rel="canonical" href="https://yeahdogs.github.io/chains/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Chains — git for files">
+<meta property="og:description" content="Snapshot anything. Diff anything. Restore anything. Never lose a file again.">
+<meta property="og:url" content="https://yeahdogs.github.io/chains/">
+<meta property="og:image" content="https://yeahdogs.github.io/chains/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Chains — git for files">
+<meta name="twitter:description" content="Snapshot anything. Diff anything. Restore anything.">
+<meta name="twitter:image" content="https://yeahdogs.github.io/chains/og.png">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="favicon.svg">
+<meta name="theme-color" content="#12100c">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#12100c; --surface:#1b1712; --surface2:#221d15;
+  --ink:#f2ecdd; --muted:#a89d86; --faint:#6f6656;
+  --amber:#e8963c; --amber-deep:#b96f22; --sage:#9db37e;
+  --line:#2c2620; --radius:10px;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+::selection{background:var(--amber);color:#12100c}
+a{color:inherit}
+.wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+.skip{position:absolute;left:-9999px;top:0;background:var(--amber);color:#12100c;padding:10px 16px;z-index:99;font-weight:700}
+.skip:focus{left:8px;top:8px}
+
+/* header */
+header.site{position:sticky;top:0;z-index:50;background:rgba(18,16,12,.88);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.nav{display:flex;align-items:center;justify-content:space-between;height:60px}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none;font-weight:700;letter-spacing:.14em;font-size:14px}
+.brand svg{width:26px;height:26px}
+.nav-links{display:flex;align-items:center;gap:18px;font-size:13px}
+.nav-links a{text-decoration:none;color:var(--muted)}
+.nav-links a:hover{color:var(--ink)}
+.btn{display:inline-block;background:var(--amber);color:#12100c;font-weight:700;text-decoration:none;padding:11px 22px;border-radius:6px;font-size:14px;letter-spacing:.02em;border:0;cursor:pointer;transition:transform .18s ease,background .18s ease}
+.btn:hover{background:#f2a94f;transform:translateY(-1px)}
+.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.btn.ghost:hover{border-color:var(--amber);color:var(--amber);transform:translateY(-1px)}
+.nav-links .btn{padding:8px 16px;font-size:13px}
+
+/* hero */
+.hero{padding:72px 0 56px;position:relative}
+.eyebrow{color:var(--amber);font-size:12px;letter-spacing:.22em;text-transform:uppercase;margin-bottom:18px}
+h1{font-size:clamp(40px,9vw,84px);line-height:1.02;font-weight:700;letter-spacing:-.01em;margin-bottom:20px}
+h1 .dot{color:var(--amber)}
+.lede{color:var(--muted);font-size:clamp(15px,2.6vw,18px);max-width:34em;margin-bottom:28px}
+.lede strong{color:var(--ink);font-weight:600}
+.cta-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:44px}
+.meta-line{font-size:12px;color:var(--faint);letter-spacing:.04em}
+.meta-line span{margin-right:16px}
+
+/* terminal */
+.term{background:#0c0a08;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;max-width:680px;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+.term-bar{display:flex;align-items:center;gap:7px;padding:11px 14px;border-bottom:1px solid var(--line)}
+.term-bar i{width:11px;height:11px;border-radius:50%;background:#3a332a}
+.term-bar i:nth-child(1){background:#c96b4a}.term-bar i:nth-child(2){background:#c9a44a}.term-bar i:nth-child(3){background:#7ba05b}
+.term-bar b{margin-left:8px;font-size:11px;color:var(--faint);font-weight:400;letter-spacing:.08em}
+.term-body{padding:18px 16px 22px;font-size:13.5px;line-height:1.75;min-height:340px}
+.term-body .p{color:var(--amber)}
+.term-body .c{color:var(--ink)}
+.term-body .o{color:var(--muted)}
+.term-body .g{color:var(--sage)}
+.term-body .d{color:var(--faint)}
+.caret{display:inline-block;width:8px;height:16px;background:var(--amber);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* chain section */
+section{padding:64px 0}
+.sec-head{margin-bottom:36px}
+.sec-kicker{color:var(--amber);font-size:12px;letter-spacing:.22em;text-transform:uppercase;margin-bottom:12px}
+h2{font-size:clamp(26px,5.4vw,44px);line-height:1.1;font-weight:700;margin-bottom:12px;letter-spacing:-.01em}
+.sec-sub{color:var(--muted);max-width:36em;font-size:15px}
+.chain{position:relative;max-width:640px;margin:0 auto}
+.commit{position:relative;padding:0 0 8px 44px}
+.commit::before{content:"";position:absolute;left:15px;top:38px;bottom:-8px;width:2px;background:var(--line);transform:scaleY(0);transform-origin:top;transition:transform .8s ease}
+.commit.on::before{transform:scaleY(1)}
+.commit:last-child::before{display:none}
+.link{position:absolute;left:6px;top:8px;width:22px;height:22px;border:2px solid var(--amber);border-radius:50%;background:var(--bg);transition:background .3s ease}
+.commit.on .link{background:var(--amber)}
+.commit.on .link::after{content:"";position:absolute;inset:5px;border-radius:50%;background:#12100c}
+.c-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;opacity:0;transform:translateY(14px);transition:opacity .5s ease,transform .5s ease}
+.commit.on .c-card{opacity:1;transform:none}
+.c-id{color:var(--amber);font-size:12px;letter-spacing:.06em}
+.c-msg{font-weight:600;margin:4px 0}
+.c-meta{color:var(--faint);font-size:12px}
+.c-meta .ok{color:var(--sage)}
+
+/* commands */
+.cmds{display:grid;grid-template-columns:1fr;gap:14px}
+.cmd{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:20px;opacity:0;transform:translateY(16px);transition:opacity .55s ease,transform .55s ease}
+.cmd.on{opacity:1;transform:none}
+.cmd h3{font-size:13px;color:var(--amber);letter-spacing:.1em;margin-bottom:8px}
+.cmd h3 code{background:none;padding:0}
+.cmd p{color:var(--muted);font-size:13.5px}
+.cmd .ex{margin-top:10px;background:#0c0a08;border:1px solid var(--line);border-radius:6px;padding:10px 12px;font-size:12.5px;color:var(--ink);overflow-x:auto;white-space:pre}
+.cmd .ex .d{color:var(--faint)}.cmd .ex .g{color:var(--sage)}.cmd .ex .a{color:var(--amber)}
+@media(min-width:760px){
+  .cmds{grid-template-columns:1.15fr 1fr}
+  .cmd:nth-child(1){grid-row:span 2}
+  .cmd:nth-child(4){grid-column:span 2}
+}
+
+/* patterns */
+.patterns-grid{display:grid;grid-template-columns:1fr;gap:14px}
+.cfg{background:#0c0a08;border:1px solid var(--line);border-radius:var(--radius);padding:20px;font-size:13px;overflow-x:auto}
+.cfg pre{white-space:pre}
+.cfg .k{color:var(--amber)}.cfg .s{color:var(--sage)}.cfg .d{color:var(--faint)}
+.patterns-copy p{color:var(--muted);font-size:14px;margin-bottom:12px}
+.patterns-copy p strong{color:var(--ink)}
+@media(min-width:760px){.patterns-grid{grid-template-columns:1fr 1fr;align-items:start}}
+
+/* sync */
+.sync-steps{display:grid;grid-template-columns:1fr;gap:14px;counter-reset:step}
+.step{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:22px 20px;position:relative;opacity:0;transform:translateY(16px);transition:opacity .55s ease,transform .55s ease}
+.step.on{opacity:1;transform:none}
+.step::before{counter-increment:step;content:"0" counter(step);display:block;color:var(--amber);font-weight:700;font-size:13px;letter-spacing:.14em;margin-bottom:8px}
+.step h3{font-size:16px;margin-bottom:6px}
+.step p{color:var(--muted);font-size:13.5px}
+.step .tag{display:inline-block;margin-top:10px;font-size:11px;letter-spacing:.1em;color:var(--sage);border:1px solid var(--line);border-radius:4px;padding:3px 9px}
+.step .tag.soon{color:var(--faint)}
+@media(min-width:760px){.sync-steps{grid-template-columns:repeat(3,1fr)}}
+
+/* faq */
+.faq details{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:10px;overflow:hidden}
+.faq summary{padding:16px 18px;cursor:pointer;font-weight:600;font-size:14.5px;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";color:var(--amber);font-size:20px;font-weight:400;flex-shrink:0;transition:transform .25s ease}
+.faq details[open] summary::after{transform:rotate(45deg)}
+.faq .a{padding:0 18px 18px;color:var(--muted);font-size:14px}
+.faq .a strong{color:var(--ink)}
+
+/* final cta */
+.final{text-align:center;padding:80px 0;border-top:1px solid var(--line)}
+.final h2{margin-bottom:14px}
+.final p{color:var(--muted);margin-bottom:26px}
+
+/* footer */
+footer{border-top:1px solid var(--line);padding:36px 0 90px}
+.foot{display:flex;flex-direction:column;gap:18px}
+.foot-links{display:flex;gap:20px;flex-wrap:wrap;font-size:13px}
+.foot-links a{color:var(--muted);text-decoration:none}
+.foot-links a:hover{color:var(--amber)}
+.dogs{font-size:13px;color:var(--muted)}
+.dogs a{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--amber)}
+.no-cookies{font-size:11.5px;color:var(--faint);letter-spacing:.05em}
+
+/* sticky mobile cta */
+.sticky-cta{position:fixed;left:0;right:0;bottom:0;z-index:60;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:rgba(18,16,12,.94);backdrop-filter:blur(10px);border-top:1px solid var(--line);display:none}
+.sticky-cta .btn{width:100%;text-align:center}
+@media(max-width:640px){.sticky-cta{display:block}.nav-links .btn{display:none}}
+
+/* reveal default state handled by .on; reduced motion */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+  .c-card,.cmd,.step{opacity:1!important;transform:none!important}
+  .commit::before{transform:scaleY(1)!important}
+  html{scroll-behavior:auto}
+}
+</style>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
+{"@type":"Question","name":"What can Chains track?","acceptedAnswer":{"@type":"Answer","text":"Anything. Game saves ship as the default tracked set, but a vault's include/exclude glob patterns can point it at any files: essays, configs, art, anything."}},
+{"@type":"Question","name":"Does Chains store ROMs or game files?","acceptedAnswer":{"@type":"Answer","text":"No. Chains versions only your files, never ROMs or firmware. Those live elsewhere."}},
+{"@type":"Question","name":"Do I need an account?","acceptedAnswer":{"@type":"Answer","text":"No. No accounts, no telemetry, no cloud required. Your vault is a folder on your machine; sync moves through any directory you choose."}},
+{"@type":"Question","name":"What if I restore the wrong moment?","acceptedAnswer":{"@type":"Answer","text":"Restore auto-commits your current state first, so every restore is undoable. The journal is append-only: history is never rewritten."}},
+{"@type":"Question","name":"How do I know my history is intact?","acceptedAnswer":{"@type":"Answer","text":"Every commit id is derived from its parent, timestamp, message, and file list, and every stored blob is re-hashed against its SHA256. 'verify' proves the whole chain is untampered."}}
+]}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site">
+  <div class="wrap nav">
+    <a class="brand" href="#top" aria-label="Chains home">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#e8963c" stroke-width="2" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
+      CHAINS
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#how">How it works</a>
+      <a href="#sync">Sync</a>
+      <a href="#faq">FAQ</a>
+      <a class="btn" href="https://github.com/YEAHDOGS/chains">Get Chains</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<div class="wrap hero" id="top">
+  <p class="eyebrow">Version control, minus the code</p>
+  <h1>git for files<span class="dot">.</span></h1>
+  <p class="lede">Snapshot anything. Write a note about the moment. Diff two points in time, byte-for-byte. Restore any moment. <strong>Never lose a file again.</strong></p>
+  <div class="cta-row">
+    <a class="btn" href="https://github.com/YEAHDOGS/chains">Get Chains</a>
+    <a class="btn ghost" href="https://github.com/YEAHDOGS/chains#readme">Read the docs</a>
+  </div>
+  <div class="term" role="img" aria-label="Terminal demo: committing a game save, diffing two commits, restoring, and verifying the chain">
+    <div class="term-bar"><i></i><i></i><i></i><b>chains — demo</b></div>
+    <div class="term-body" id="term" aria-hidden="true"></div>
+  </div>
+  <p class="meta-line" style="margin-top:16px"><span>NO ACCOUNTS</span><span>NO TELEMETRY</span><span>YOUR FILES STAY YOURS</span></p>
+</div>
+
+<div class="wrap">
+<section id="how" aria-label="How it works">
+  <div class="sec-head">
+    <p class="sec-kicker">The chain</p>
+    <h2>Every moment, linked.</h2>
+    <p class="sec-sub">Each commit is derived from the one before it. Touch the journal and the chain breaks, loudly. That is the whole trick.</p>
+  </div>
+  <div class="chain">
+    <div class="commit"><span class="link" aria-hidden="true"></span>
+      <div class="c-card"><p class="c-id">a1b2c3 · rev 12</p><p class="c-msg">"beat the Elite Four, Mewtwo next"</p><p class="c-meta">4 files · 38 KB · <span class="ok">verified</span></p></div>
+    </div>
+    <div class="commit"><span class="link" aria-hidden="true"></span>
+      <div class="c-card"><p class="c-id">d4e5f6 · rev 13</p><p class="c-msg">"draft finished"</p><p class="c-meta">2 files · 9 KB · <span class="ok">verified</span></p></div>
+    </div>
+    <div class="commit"><span class="link" aria-hidden="true"></span>
+      <div class="c-card"><p class="c-id">9c0ab1 · rev 14</p><p class="c-msg">"pre-restore auto-backup"</p><p class="c-meta">auto-saved before a restore · <span class="ok">verified</span></p></div>
+    </div>
+    <div class="commit"><span class="link" aria-hidden="true"></span>
+      <div class="c-card"><p class="c-id">77f2e9 · rev 15 · HEAD</p><p class="c-msg">"restored a1b2c3 — undid the bad grind"</p><p class="c-meta">undoable, always · <span class="ok">verified</span></p></div>
+    </div>
+  </div>
+</section>
+
+<section aria-label="Commands">
+  <div class="sec-head">
+    <p class="sec-kicker">Six commands</p>
+    <h2>That's the whole interface.</h2>
+    <p class="sec-sub">No dashboard. No settings maze. Six verbs between you and never losing a file.</p>
+  </div>
+  <div class="cmds">
+    <div class="cmd"><h3><code>commit</code></h3><p>Snapshot the moment, in your words. Identical tree? Nothing to commit.</p><div class="ex"><span class="d">$</span> chains commit -m "beat the Elite Four"
+<span class="g">committed a1b2c3 (rev 12)</span> — 4 files, 38 KB</div></div>
+    <div class="cmd"><h3><code>diff</code></h3><p>What changed between two moments, byte-for-byte.</p><div class="ex"><span class="d">$</span> chains diff a1b2c3 d4e5f6
+<span class="a">~</span> saves/pokemon.sav
+<span class="d">1,204 of 131,072 bytes differ</span></div></div>
+    <div class="cmd"><h3><code>restore</code></h3><p>Go back. Your current state is auto-backed up first, so restores are undoable.</p><div class="ex"><span class="d">$</span> chains restore a1b2c3
+<span class="g">pre-restore backup saved. restored a1b2c3</span></div></div>
+    <div class="cmd"><h3><code>verify</code></h3><p>Prove the journal and every snapshot are untampered. Scriptable: exits non-zero on failure.</p><div class="ex"><span class="d">$</span> chains verify
+<span class="g">chain intact</span> — 15 commits, 61 blobs, hashes match</div></div>
+    <div class="cmd"><h3><code>patterns</code></h3><p>Track anything. Two glob lists decide what a vault versions.</p><div class="ex"><span class="d">$</span> chains patterns -SetInclude "*.md;*.ps1"
+<span class="g">tracking docs now, history untouched</span></div></div>
+    <div class="cmd"><h3><code>push / fetch</code></h3><p>Move history through any folder: USB stick, LAN share, mounted cloud drive. Offline-first, no network code in the engine.</p><div class="ex"><span class="d">$</span> chains push -Remote E:\vault-remote
+<span class="g">pushed 3 commits, 11 blobs</span></div></div>
+  </div>
+</section>
+
+<section aria-label="Track anything">
+  <div class="sec-head">
+    <p class="sec-kicker">Not just saves</p>
+    <h2>Born from a lost game save.<br>Grown into everything.</h2>
+  </div>
+  <div class="patterns-grid">
+    <div class="patterns-copy">
+      <p>Chains started the night a game save vanished, so <strong>save data ships as the default</strong>: battery saves and save states across SNES, GBA, N64, PSX, PS2, GameCube, PSP, NDS, and BizHawk.</p>
+      <p>But a vault's tracked set is just <strong>two glob lists</strong>. Point it at essays, configs, art, anything. Changing patterns never touches history.</p>
+      <p>Only your files are ever stored. <strong>Never ROMs, never firmware.</strong></p>
+    </div>
+    <div class="cfg"><pre><span class="d">// .chains/config.json</span>
+{
+  <span class="k">"includePatterns"</span>: [<span class="s">"*.srm"</span>, <span class="s">"*.sav"</span>,
+    <span class="s">"*.state*"</span>, <span class="s">"*.mcr"</span>, <span class="s">"*.ps2"</span>],
+  <span class="k">"excludePatterns"</span>: [<span class="s">"*.tmp"</span>, <span class="s">"~$*"</span>],
+  <span class="d">// exclude wins. .chains itself is never scanned.</span>
+}</pre></div>
+  </div>
+</section>
+
+<section id="sync" aria-label="Sync">
+  <div class="sec-head">
+    <p class="sec-kicker">Sync</p>
+    <h2>Your history, everywhere you are.</h2>
+    <p class="sec-sub">Content-addressed blobs and an append-only journal map 1:1 onto sync. Same shape as git, minus the DAG.</p>
+  </div>
+  <div class="sync-steps">
+    <div class="step"><h3>LAN vault</h3><p>Keep the vault on a network share and every machine on the LAN sees the same history.</p><span class="tag">WORKS NOW</span></div>
+    <div class="step"><h3>USB-stick sync</h3><p>Push and fetch through any directory: stick, share, mounted cloud drive. Preview first with a read-only plan.</p><span class="tag">WORKS NOW</span></div>
+    <div class="step"><h3>Offsite vault</h3><p>Encrypted offsite replication, so your files survive a house fire.</p><span class="tag soon">ON THE ROADMAP</span></div>
+  </div>
+</section>
+
+<section id="faq" class="faq" aria-label="Frequently asked questions">
+  <div class="sec-head">
+    <p class="sec-kicker">FAQ</p>
+    <h2>Five honest answers.</h2>
+  </div>
+  <details><summary>What can Chains track?</summary><div class="a">Anything. Game saves are the default, but a vault's <strong>include/exclude glob patterns</strong> can point it at any files: essays, configs, art. Whatever you point it at, it versions.</div></details>
+  <details><summary>Does it store ROMs or game files?</summary><div class="a"><strong>No.</strong> Chains versions only your files, never ROMs or firmware. Those live in a separate project entirely.</div></details>
+  <details><summary>Do I need an account?</summary><div class="a"><strong>No.</strong> No accounts, no telemetry, no cloud required. A vault is a folder on your machine. Sync moves through any directory you choose.</div></details>
+  <details><summary>What if I restore the wrong moment?</summary><div class="a">Restore <strong>auto-commits your current state first</strong>, so every restore is undoable. The journal is append-only: history is never rewritten.</div></details>
+  <details><summary>How do I know my history is intact?</summary><div class="a">Every commit id is derived from its parent, timestamp, message, and file list, and every blob is re-hashed against its SHA256. Run <strong>verify</strong> and it proves the whole chain is untampered.</div></details>
+</section>
+
+<section class="final" aria-label="Get started">
+  <h2>Stop losing files.</h2>
+  <p>Free and open source. Six commands. Your files stay yours.</p>
+  <a class="btn" href="https://github.com/YEAHDOGS/chains">Get Chains on GitHub</a>
+</section>
+</div>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div class="foot-links">
+      <a href="https://github.com/YEAHDOGS/chains">GitHub</a>
+      <a href="https://github.com/YEAHDOGS/chains#readme">Docs</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="sitemap.xml">Sitemap</a>
+    </div>
+    <p class="dogs">This product was made by <a href="https://wearedogs.net">DOGS</a>.</p>
+    <p class="no-cookies">NO COOKIES · NO TRACKING · NO ACCOUNTS</p>
+  </div>
+</footer>
+
+<div class="sticky-cta"><a class="btn" href="https://github.com/YEAHDOGS/chains">Get Chains</a></div>
+
+<script>
+(function(){
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* reveal on scroll: commits, command cards, sync steps */
+  var els = document.querySelectorAll('.commit, .cmd, .step');
+  if ('IntersectionObserver' in window && !reduced) {
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if (e.isIntersecting) { e.target.classList.add('on'); io.unobserve(e.target); }
+      });
+    }, {threshold: 0.18, rootMargin: '0px 0px -6% 0px'});
+    els.forEach(function(el){ io.observe(el); });
+  } else {
+    els.forEach(function(el){ el.classList.add('on'); });
+  }
+
+  /* terminal typing: real commands, real product */
+  var term = document.getElementById('term');
+  var lines = [
+    {t:'$ ', cls:'p', s:'chains commit -m "beat the Elite Four, Mewtwo next"', cls2:'c'},
+    {t:'committed a1b2c3 (rev 12) — 4 files, 38 KB', cls:'g'},
+    {t:'$ ', cls:'p', s:'chains diff a1b2c3 d4e5f6', cls2:'c'},
+    {t:'~ saves/pokemon.sav: 1,204 of 131,072 bytes differ', cls:'o'},
+    {t:'$ ', cls:'p', s:'chains restore a1b2c3', cls2:'c'},
+    {t:'pre-restore backup saved. restored a1b2c3', cls:'g'},
+    {t:'$ ', cls:'p', s:'chains verify', cls2:'c'},
+    {t:'chain intact — 15 commits, 61 blobs, hashes match', cls:'g'}
+  ];
+  function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+  if (reduced) {
+    var html = '';
+    lines.forEach(function(l){
+      html += '<div><span class="'+l.cls+'">'+esc(l.t)+'</span>' +
+        (l.s ? '<span class="'+l.cls2+'">'+esc(l.s)+'</span>' : '') + '</div>';
+    });
+    term.innerHTML = html;
+    return;
+  }
+  var li = 0, ci = 0, cur;
+  function newLine(){
+    cur = document.createElement('div');
+    var pre = document.createElement('span'); pre.className = lines[li].cls; pre.textContent = lines[li].t;
+    cur.appendChild(pre);
+    if (lines[li].s) {
+      var typed = document.createElement('span'); typed.className = lines[li].cls2;
+      var caret = document.createElement('span'); caret.className = 'caret';
+      cur.appendChild(typed); cur.appendChild(caret);
+      cur._typed = typed; cur._caret = caret; cur._full = lines[li].s;
+    }
+    term.appendChild(cur);
+  }
+  function type(){
+    if (li >= lines.length) {
+      var c = document.createElement('div');
+      c.innerHTML = '<span class="p">$ </span><span class="caret"></span>';
+      term.appendChild(c);
+      return;
+    }
+    if (!cur) newLine();
+    var l = lines[li];
+    if (l.s && ci < l.s.length) {
+      cur._typed.textContent = l.s.slice(0, ++ci);
+      setTimeout(type, 18 + Math.random() * 30);
+    } else {
+      if (cur._caret) cur._caret.remove();
+      cur = null; ci = 0; li++;
+      setTimeout(type, l.s ? 260 : 420);
+    }
+  }
+  setTimeout(type, 500);
+})();
+</script>
+</body>
+</html>
