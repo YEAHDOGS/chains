@@ -1,8 +1,8 @@
-# Chains — "git for save data"
+# Chains — "git for files"
 
-*Never lose a game save again.*
+*Never lose a file again.*
 
-Chains is version control for emulator save files: snapshot them, write a message about where you are in the game, browse history, diff two points in time byte-for-byte, and restore any commit. It was born the night a save got lost.
+Chains is version control for files: snapshot them, write a message about the moment, browse history, diff two points in time byte-for-byte, and restore any commit. It was born as "git for save data" the night a game save got lost — emulator saves are still the default tracked patterns — and grew into general file versioning: the same machinery, any bytes.
 
 ## Quick Start
 
@@ -34,7 +34,8 @@ For the moments PowerShell isn't around at all, the dependency-free twins
 
 ## What Gets Tracked
 
-Battery saves and save states — the files that hold *your progress*:
+Whatever your vault's patterns say. Out of the box a vault tracks save
+data — battery saves and save states, the files that hold *your progress*:
 
 | System | Battery save | Emulators |
 |---|---|---|
@@ -53,6 +54,31 @@ Tracked patterns: `*.srm`, `*.sav`, `*.state*`, `*.sgm`, `*.zst`, `*.savestate`,
 
 > Save states are emulator-version-sensitive; battery saves (`.srm`/`.sav`) are the portable, future-proof format. When in doubt, save in-game, not just save-state.
 
+### Track any files
+
+A vault's tracked set is just two glob lists in `config.json` — `includePatterns` and `excludePatterns` (exclude wins) — so any vault can version any files:
+
+```powershell
+.\chains.ps1 patterns                              # show the current lists
+.\chains.ps1 patterns -SetInclude "*.md;*.ps1"     # replace: track docs, not saves
+.\chains.ps1 patterns -Include "*.txt"             # append to the include list
+.\chains.ps1 patterns -Exclude "*.tmp;~$*"        # ignore temp files
+.\chains.ps1 patterns -Reset                       # back to the save-data defaults
+```
+
+Globs are PowerShell wildcards matched against file names (`*`, `?`);
+separate them with `;` or `,`. Changing patterns only affects future
+scans — history is untouched, like editing `.gitignore`. The `.chains`
+directory itself is never scanned, even when the vault root is watched.
+
+```powershell
+cd ~\Documents\essays
+.\chains.ps1 init
+.\chains.ps1 watch -Add .
+.\chains.ps1 patterns -SetInclude "*.md"
+.\chains.ps1 commit -m "draft finished"
+```
+
 ## Architecture
 
 Design decisions — storage model, identity, sync, security, versioning — are
@@ -64,13 +90,13 @@ A vault is any directory containing `.chains/`:
 
 ```text
 .chains/
-├── config.json        # version, watch paths
+├── config.json        # version, watch paths, include/exclude patterns
 ├── journal.jsonl      # append-only history: one JSON object per commit
 └── snapshots/<sha256> # full file bytes, content-addressed (saves are KBs,
                        # so full snapshots beat binary deltas -- simple + robust)
 ```
 
-- **commit** scans watched dirs, hashes every save (SHA256), stores unseen blobs, appends a journal entry. Identical tree → "nothing to commit".
+- **commit** scans watched dirs for tracked files, hashes each (SHA256), stores unseen blobs, appends a journal entry carrying the commit id, parent link, revision number (`seq`), and the patterns in effect. Identical tree → "nothing to commit".
 - **diff** reports added / deleted / modified files with size deltas *and* a byte-level "N of M bytes differ" summary (skipped over 4 MB).
 - **restore** auto-commits the current state as `pre-restore auto-backup` first, then writes the commit's blobs back. You can always undo a restore.
 - **verify** re-derives every commit id from its parent id, timestamp, message, and file list — any edit to the journal breaks the chain — and re-hashes every stored blob against its recorded SHA256, catching silent snapshot corruption. The `verify` command exits non-zero on failure, so it can run in scripts.
@@ -114,10 +140,12 @@ Every test builds a throwaway vault under the OS temp folder — nothing touches
 The bash side has its own suites (run from the repo root, no PowerShell needed):
 
 ```bash
-bash tests/test-chains-sh.sh   # chains.sh dispatcher: 80 assertions via a pwsh shim
+bash tests/test-chains-sh.sh   # chains.sh dispatcher: 93 assertions via a pwsh shim
 bash tests/test-doctor.sh      # chains-doctor.sh: 87 assertions
 bash tests/test-sync.sh        # chains-sync.sh: 50 assertions
 bash tests/test-sync-plan.sh   # chains-sync-plan.sh: 31 assertions
+bash tests/test-journal-schema.sh  # journal backward-compat + seq/patterns contract
+bash tests/test-file-patterns.sh   # include/exclude/.chains-skip/dedupe contract
 ```
 
 ## Origin

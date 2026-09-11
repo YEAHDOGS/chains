@@ -1,10 +1,12 @@
 <#
 .SYNOPSIS
-    Chains -- "git for save data" command line interface.
+    Chains -- "git for files" command line interface.
 .DESCRIPTION
-    Version-control your emulator save files: snapshot battery saves
-    (SNES .srm, GBA .sav) and save states, browse history, diff commits,
-    and restore any point in time. Never lose a save again.
+    Version-control your files: snapshot any watched directory, write a
+    message about the moment, browse history, diff commits, and restore any
+    point in time. Born as "git for save data" (emulator battery saves like
+    SNES .srm and GBA .sav are still the default tracked patterns) and grown
+    into general file versioning. Never lose a file again.
 .EXAMPLE
     .\chains.ps1 init
     .\chains.ps1 watch -Known
@@ -15,6 +17,7 @@
     .\chains.ps1 verify
     .\chains.ps1 push -Remote "E:\chains-remote"
     .\chains.ps1 fetch -Remote "\\CASTLE\chains"
+    .\chains.ps1 patterns -SetInclude "*.md;*.ps1"   # track docs, not saves
 #>
 param(
     [Parameter(Position = 0)]
@@ -48,7 +51,22 @@ param(
     [switch]$Oneline,
 
     [Parameter()]
-    [string]$Remote
+    [string]$Remote,
+
+    [Parameter()]
+    [string]$Include,
+
+    [Parameter()]
+    [string]$Exclude,
+
+    [Parameter()]
+    [string]$SetInclude,
+
+    [Parameter()]
+    [string]$SetExclude,
+
+    [Parameter()]
+    [switch]$Reset
 )
 
 $ModuleRoot = Join-Path $PSScriptRoot "modules"
@@ -63,12 +81,12 @@ $VaultRoot = $VaultRoot.Path
 
 function Show-Usage {
     Write-Host ""
-    Write-Host "  Chains -- git for save data" -ForegroundColor Cyan
+    Write-Host "  Chains -- git for files" -ForegroundColor Cyan
     Write-Host "  ================================================================" -ForegroundColor DarkGray
     Write-Host "  .\chains.ps1 init                  Initialize a vault here" -ForegroundColor White
     Write-Host "  .\chains.ps1 watch -Known          Auto-watch emulator save dirs" -ForegroundColor White
     Write-Host "  .\chains.ps1 watch -Add <dir>      Watch an explicit directory" -ForegroundColor White
-    Write-Host "  .\chains.ps1 commit -m ""msg""       Snapshot current saves" -ForegroundColor White
+    Write-Host "  .\chains.ps1 commit -m ""msg""       Snapshot tracked files" -ForegroundColor White
     Write-Host "  .\chains.ps1 status                Diff working tree vs HEAD" -ForegroundColor White
     Write-Host "  .\chains.ps1 log [-n 10] [-Oneline]  History, newest first" -ForegroundColor White
     Write-Host "  .\chains.ps1 diff <a> <b>          Compare two commits" -ForegroundColor White
@@ -76,6 +94,10 @@ function Show-Usage {
     Write-Host "  .\chains.ps1 verify                Check journal + blob integrity" -ForegroundColor White
     Write-Host "  .\chains.ps1 push -Remote <dir>    Push vault to a local remote" -ForegroundColor White
     Write-Host "  .\chains.ps1 fetch -Remote <dir>   Fetch from a local remote" -ForegroundColor White
+    Write-Host "  .\chains.ps1 patterns              Show tracked file patterns" -ForegroundColor White
+    Write-Host "  .\chains.ps1 patterns -SetInclude ""*.md;*.txt""  Track docs instead of saves" -ForegroundColor White
+    Write-Host "  .\chains.ps1 patterns -Exclude ""*.tmp""          Ignore temp files" -ForegroundColor White
+    Write-Host "  .\chains.ps1 patterns -Reset       Back to save-data defaults" -ForegroundColor White
     Write-Host ""
     Write-Host "  -Path <dir> selects the vault root (default: current directory)." -ForegroundColor DarkGray
     Write-Host ""
@@ -122,11 +144,12 @@ switch ($Command.ToLower()) {
         foreach ($e in $Entries) {
             $When = ([datetime]$e.When).ToLocalTime().ToString("yyyy-MM-dd HH:mm")
             $Delta = "+$($e.Added) ~$($e.Modified) -$($e.Deleted)"
+            $SeqTag = if ($null -ne $e.Seq) { " #$($e.Seq)" } else { "" }
             if ($Oneline) {
-                Write-Host "  $($e.Id)  $When  $Delta  $($e.Message)" -ForegroundColor Cyan
+                Write-Host "  $($e.Id)$SeqTag  $When  $Delta  $($e.Message)" -ForegroundColor Cyan
             }
             else {
-                Write-Host "  $($e.Id)  $When  ($($e.Files) files, $Delta)" -ForegroundColor Cyan
+                Write-Host "  $($e.Id)$SeqTag  $When  ($($e.Files) files, $Delta)" -ForegroundColor Cyan
                 if ($e.Message) { Write-Host "      $($e.Message)" -ForegroundColor White }
             }
         }
@@ -146,6 +169,26 @@ switch ($Command.ToLower()) {
         $Paths = Get-VaultPaths -VaultRoot $VaultRoot
         if (-not (Test-Path $Paths.Dir)) { Write-Host "  [FAIL] Not a Chains. Run 'init' first." -ForegroundColor Red; Exit 1 }
         if (Test-SaveChain -Paths $Paths) { Exit 0 } else { Exit 1 }
+    }
+    "patterns" {
+        $Paths = Get-VaultPaths -VaultRoot $VaultRoot
+        if (-not (Test-Path $Paths.Dir)) { Write-Host "  [FAIL] Not a Chains. Run 'init' first." -ForegroundColor Red; Exit 1 }
+        if ($PSBoundParameters.ContainsKey("Reset")) {
+            Set-TrackedPatterns -Paths $Paths -Reset | Out-Null
+        }
+        elseif ($PSBoundParameters.ContainsKey("SetInclude") -or $PSBoundParameters.ContainsKey("SetExclude")) {
+            Set-TrackedPatterns -Paths $Paths `
+                -Include (Split-PatternList $SetInclude) `
+                -Exclude (Split-PatternList $SetExclude) -Replace | Out-Null
+        }
+        elseif ($PSBoundParameters.ContainsKey("Include") -or $PSBoundParameters.ContainsKey("Exclude")) {
+            Set-TrackedPatterns -Paths $Paths `
+                -Include (Split-PatternList $Include) `
+                -Exclude (Split-PatternList $Exclude) | Out-Null
+        }
+        else {
+            Show-TrackedPatterns -Paths $Paths
+        }
     }
     "diff" {
         # diff takes two positional refs: .\chains.ps1 diff <a> <b>

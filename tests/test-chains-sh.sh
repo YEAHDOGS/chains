@@ -98,7 +98,7 @@ run_sh() {
 reset_shim
 run_sh -
 assert_exit 0 "$CODE" "no args -> usage, exit 0"
-assert_contains "$OUT" "Chains -- git for save data" "usage header"
+assert_contains "$OUT" "Chains -- git for files" "usage header"
 assert_contains "$OUT" "./chains.sh init" "usage references chains.sh"
 assert_eq 0 "$(shim_calls)" "no args never touches pwsh"
 
@@ -187,6 +187,42 @@ reset_shim
 run_sh - log -n abc -Path "$WORK"
 assert_exit 1 "$CODE" "non-int -n fails like PS parameter binding"
 assert_eq 0 "$(shim_calls)" "bad -n never reaches pwsh"
+
+# --- 7b. patterns ------------------------------------------------------------------
+reset_shim
+run_sh - patterns -Path "$WORK"
+last="$(shim_last)"
+assert_contains "$last" "Show-TrackedPatterns" "bare patterns dispatches Show-TrackedPatterns"
+assert_contains "$last" "CHAINS_PATTERNS_MODE=show" "bare patterns -> show mode"
+
+reset_shim
+run_sh - patterns -SetInclude "*.md;*.txt" -Path "$WORK"
+last="$(shim_last)"
+assert_contains "$last" "Set-TrackedPatterns" "patterns -SetInclude dispatches Set-TrackedPatterns"
+assert_contains "$last" "CHAINS_PATTERNS_MODE=replace" "-SetInclude -> replace mode"
+assert_contains "$last" "CHAINS_SETINCLUDE=*.md;*.txt" "-SetInclude value travels via env"
+assert_contains "$last" "Split-PatternList" "globs go through Split-PatternList"
+
+reset_shim
+run_sh - patterns -Include "*.md" -Exclude "*.tmp" -Path "$WORK"
+last="$(shim_last)"
+assert_contains "$last" "CHAINS_PATTERNS_MODE=append" "-Include/-Exclude -> append mode"
+assert_contains "$last" "CHAINS_INCLUDE=*.md" "-Include value travels via env"
+assert_contains "$last" "CHAINS_EXCLUDE=*.tmp" "-Exclude value travels via env"
+
+reset_shim
+run_sh - patterns -SetInclude "" -Path "$WORK"
+last="$(shim_last)"
+assert_contains "$last" "CHAINS_PATTERNS_MODE=replace" "explicit empty -SetInclude is replace (track nothing)"
+assert_contains "$last" "CHAINS_SETINCLUDE=" "empty -SetInclude travels as empty"
+
+reset_shim
+run_sh - patterns -Reset -SetInclude "*.md" -Path "$WORK"
+assert_contains "$(shim_last)" "CHAINS_PATTERNS_MODE=reset" "-Reset wins over -SetInclude (like PS arm order)"
+
+reset_shim
+run_sh - patterns -Reset -Path "$WORK"
+assert_contains "$(shim_last)" "Set-TrackedPatterns" "patterns -Reset dispatches Set-TrackedPatterns"
 
 # --- 8. push / fetch --------------------------------------------------------------
 reset_shim
