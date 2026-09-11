@@ -51,8 +51,23 @@ Whatever we build here should be **transparent about the chain**:
 
 - Not a replacement for backups (that's still the vault's job).
 - Not surveillance — the chain belongs to the file's owner, on their machine.
-- Not a v1 feature. Chains v1 stays scoped to save data. This document is the
-  north star for where the model goes when it grows up.
+
+## Update 2026-09-11 — the expansion shipped (part 1)
+
+General file versioning landed: a vault's tracked set is now two glob
+lists (`includePatterns` / `excludePatterns` in `config.json`), managed
+with the `patterns` command; the save-data patterns remain the defaults,
+so existing vaults behave exactly as before. Every commit now carries a
+**revision number** (`seq`, monotonic per journal) and a snapshot of the
+patterns in effect — the "which revision / what was tracked when" half of
+the chain-of-custody vision, recorded in the journal itself. Both fields
+are optional and backward-compatible: old entries verify, merge, and sync
+exactly as before.
+
+Still open: the **who** (user-account identity pinned to each link), the
+OS-level surfacing (this is the layer destined for Castle OS), and the
+naming question ("Gasoline" was floated in dictation — still unconfirmed,
+so nothing is named that anywhere).
 
 ## Open questions
 
