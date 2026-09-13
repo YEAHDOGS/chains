@@ -11,7 +11,7 @@ Most of these decisions follow from that. Anything that needs to understand
 game data — editors, converters, cheat patchers — belongs in another tool.
 
 Status key: `ACCEPTED` (do it / already doing it), `PROPOSED` (recommended,
-not yet built), `OPEN` (needs user's call).
+not yet built), `OPEN` (needs the founder's call).
 
 ---
 
@@ -276,7 +276,7 @@ sees plaintext.** Decisions:
   remote-storage property.
 
 **Honest gap:** the threat model is casual-cloud-storage snooping and
-house-fire survival, not nation-state. If user wants zero-trust against
+house-fire survival, not nation-state. For zero-trust against
 the storage provider, that's the current design; if he wants deniability
 of game libraries, per-blob padding to fixed size classes would be needed
 — not currently recommended (cost/benefit).
@@ -317,7 +317,7 @@ archives). The security posture is layered:
 6. **Dependency minimalism.** The doctor needs only bash + python3 stdlib +
    sha256sum; the engine only PowerShell stdlib. No new dependency may be
    added for security-adjacent work without the default-deny review
-   (no third-party mirrors, no unfamiliar hosts — user's rule).
+   (no third-party mirrors, no unfamiliar hosts — the standing rule).
 
 **Audit surface, stated plainly:** the PowerShell JSON parsing of
 `journal.jsonl` (`ConvertFrom-Json`) and the restore path are the two
@@ -395,7 +395,7 @@ tracked when" is part of the permanent record.
 | D5 | Security | Opaque bytes, never parse/execute; size caps; strict blob naming; fetch-before-trust; TOFU rollback pins | ACCEPTED/PROPOSED |
 | D6 | Versioning | Whole-tree commits, tamper-evident ids, tags-not-branches, byte-level diff summaries | ACCEPTED/PROPOSED |
 
-## Open questions for user
+## Open questions
 
 1. **R2 as the sync backend** — green-light the Cloudflare R2 network
    backend (D4), or stay local-filesystem-only for now?

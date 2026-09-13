@@ -1,6 +1,6 @@
 # Chains — GitHub Projects Board Draft
 
-user: the board still needs to be created in the YEAHDOGS org. One-click
+TODO: the board still needs to be created in the YEAHDOGS org. One-click
 recipe: Projects → New project → Board → name it **Chains**, create these
 columns, then copy the cards below into them. This file stays in the repo
 as the source of truth for the board's contents.

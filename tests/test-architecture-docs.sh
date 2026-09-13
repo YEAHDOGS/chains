@@ -31,7 +31,7 @@ for d in D1 D2 D3 D4 D5 D6; do
 done
 
 # Open questions section exists with at least the sync question (D4's).
-grep -q "^## Open questions for user" "$DOC" \
+grep -q "^## Open questions" "$DOC" \
     && ok "open-questions section present" || bad "open-questions section missing"
 grep -qi "R2" "$DOC" && ok "R2 sync decision recorded" || bad "R2 missing"
 
